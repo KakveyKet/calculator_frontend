@@ -11,7 +11,7 @@ import LanguageSwitch from "../components/LanguageSwitch.vue";
 
 const router = useRouter();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 /* =========================================================
    SYSTEM BRAND
@@ -40,7 +40,9 @@ const modules = [
   {
     permission: "CALCULATOR",
 
-    titleKey: "navigation.calculator",
+    titleEn: "Calculator",
+
+    titleKm: "គណនា",
 
     descriptionKey: "dashboard.calculatorDescription",
 
@@ -52,7 +54,9 @@ const modules = [
   {
     permission: "INVOICES",
 
-    titleKey: "navigation.invoices",
+    titleEn: "Invoice List",
+
+    titleKm: "បញ្ជីវិក្កយបត្រ",
 
     descriptionKey: "dashboard.invoicesDescription",
 
@@ -64,7 +68,9 @@ const modules = [
   {
     permission: "CATEGORIES",
 
-    titleKey: "navigation.categories",
+    titleEn: "Categories",
+
+    titleKm: "ប្រភេទ",
 
     descriptionKey: "dashboard.categoriesDescription",
 
@@ -76,7 +82,9 @@ const modules = [
   {
     permission: "SUB_CATEGORIES",
 
-    titleKey: "navigation.subCategories",
+    titleEn: "Sub Categories",
+
+    titleKm: "ប្រភេទរង",
 
     descriptionKey: "dashboard.subCategoriesDescription",
 
@@ -88,7 +96,9 @@ const modules = [
   {
     permission: "USERS",
 
-    titleKey: "navigation.users",
+    titleEn: "User Management",
+
+    titleKm: "គ្រប់គ្រងអ្នកប្រើប្រាស់",
 
     descriptionKey: "dashboard.usersDescription",
 
@@ -97,6 +107,20 @@ const modules = [
     route: "/users",
   },
 ];
+
+/* =========================================================
+   MODULE TITLE
+
+   Dashboard only translation.
+========================================================= */
+
+const moduleTitle = (module) => {
+  if (locale.value === "km") {
+    return module.titleKm;
+  }
+
+  return module.titleEn;
+};
 
 /* =========================================================
    PERMISSIONS
@@ -402,10 +426,12 @@ onMounted(() => {
 
           <!-- =================================================
                TITLE
+
+               Dashboard specific Khmer / English translation
           ================================================== -->
 
           <h2 class="mt-4 text-base font-bold text-slate-800">
-            {{ $t(module.titleKey) }}
+            {{ moduleTitle(module) }}
           </h2>
 
           <!-- =================================================

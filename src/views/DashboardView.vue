@@ -13,8 +13,23 @@ const router = useRouter();
 
 const { t } = useI18n();
 
+/* =========================================================
+   SYSTEM BRAND
+========================================================= */
+
+const SYSTEM_NAME = "Soda";
+
+const SYSTEM_LOGO =
+  "https://res.cloudinary.com/e0brilgp/image/upload/v1792760260/logo.jpg";
+
+/* =========================================================
+   STATE
+========================================================= */
+
 const currentUser = ref(null);
+
 const loading = ref(true);
+
 const loadError = ref("");
 
 /* =========================================================
@@ -222,25 +237,45 @@ onMounted(() => {
 
     <header class="border-b border-slate-200 bg-white">
       <div
-        class="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-4 sm:px-6"
+        class="mx-auto flex max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4"
       >
-        <!-- LEFT -->
+        <!-- =================================================
+             BRAND + USER
+        ================================================== -->
 
-        <div class="min-w-0">
-          <h1 class="text-xl font-bold text-slate-900">
-            {{ $t("dashboard.title") }}
-          </h1>
+        <div class="flex min-w-0 items-center gap-3">
+          <!-- LOGO -->
 
-          <p class="mt-1 truncate text-xs text-slate-500">
-            {{ $t("dashboard.welcomeBack") }}
+          <div class="brand-logo-wrapper">
+            <img
+              :src="SYSTEM_LOGO"
+              :alt="`${SYSTEM_NAME} Logo`"
+              class="brand-logo"
+            />
+          </div>
 
-            <span class="font-semibold text-slate-700">
-              {{ currentUser?.name || $t("users.user") }}
-            </span>
-          </p>
+          <!-- BRAND -->
+
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h1 class="truncate text-lg font-black text-slate-900 sm:text-xl">
+                {{ SYSTEM_NAME }}
+              </h1>
+            </div>
+
+            <p class="mt-0.5 truncate text-[10px] text-slate-500 sm:text-xs">
+              {{ $t("dashboard.welcomeBack") }}
+
+              <span class="font-semibold text-slate-700">
+                {{ currentUser?.name || $t("users.user") }}
+              </span>
+            </p>
+          </div>
         </div>
 
-        <!-- RIGHT -->
+        <!-- =================================================
+             RIGHT
+        ================================================== -->
 
         <div class="flex shrink-0 items-center gap-2">
           <!-- LANGUAGE -->
@@ -260,7 +295,12 @@ onMounted(() => {
 
           <!-- LOGOUT -->
 
-          <button type="button" class="logout-button" @click="signOut">
+          <button
+            type="button"
+            class="logout-button"
+            :title="$t('navigation.logout')"
+            @click="signOut"
+          >
             <i class="pi pi-sign-out" />
 
             <span class="hidden sm:inline">
@@ -352,25 +392,33 @@ onMounted(() => {
           class="dashboard-card"
           @click="openModule(module)"
         >
-          <!-- ICON -->
+          <!-- =================================================
+               ICON
+          ================================================== -->
 
           <div class="dashboard-icon">
             <i :class="module.icon" />
           </div>
 
-          <!-- TITLE -->
+          <!-- =================================================
+               TITLE
+          ================================================== -->
 
-          <!-- <h2 class="mt-4 text-base font-bold text-slate-800">
+          <h2 class="mt-4 text-base font-bold text-slate-800">
             {{ $t(module.titleKey) }}
-          </h2> -->
+          </h2>
 
-          <!-- DESCRIPTION -->
+          <!-- =================================================
+               DESCRIPTION
+          ================================================== -->
 
           <p class="mt-1 text-xs leading-5 text-slate-500">
             {{ $t(module.descriptionKey) }}
           </p>
 
-          <!-- OPEN -->
+          <!-- =================================================
+               OPEN
+          ================================================== -->
 
           <div
             class="mt-4 flex items-center gap-1 text-[10px] font-semibold text-green-600"
@@ -383,11 +431,61 @@ onMounted(() => {
           </div>
         </button>
       </div>
+
+      <!-- =================================================
+           FOOTER BRAND
+      ================================================== -->
+
+      <div
+        v-if="!loading && !loadError"
+        class="mt-8 flex items-center justify-center gap-2 text-[9px] text-slate-400"
+      >
+        <img
+          :src="SYSTEM_LOGO"
+          :alt="`${SYSTEM_NAME} Logo`"
+          class="h-5 w-5 rounded-md object-cover"
+        />
+
+        <span>
+          {{ SYSTEM_NAME }}
+        </span>
+      </div>
     </main>
   </div>
 </template>
 
 <style scoped>
+/* ========================================================
+   BRAND
+======================================================== */
+
+.brand-logo-wrapper {
+  display: flex;
+
+  width: 44px;
+  height: 44px;
+
+  flex-shrink: 0;
+
+  align-items: center;
+  justify-content: center;
+
+  overflow: hidden;
+
+  border: 1px solid #dcfce7;
+
+  border-radius: 12px;
+
+  background: #f0fdf4;
+}
+
+.brand-logo {
+  width: 100%;
+  height: 100%;
+
+  object-fit: cover;
+}
+
 /* ========================================================
    DASHBOARD CARD
 ======================================================== */
@@ -516,11 +614,22 @@ onMounted(() => {
 
 @media (max-width: 500px) {
   .logout-button {
-    width: 38px;
+    width: 36px;
 
     padding: 0;
   }
+
+  .brand-logo-wrapper {
+    width: 40px;
+    height: 40px;
+
+    border-radius: 10px;
+  }
 }
+
+/* ========================================================
+   SMALL MOBILE
+======================================================== */
 
 @media (max-width: 390px) {
   .profile-button,
@@ -529,6 +638,13 @@ onMounted(() => {
     height: 34px;
 
     min-height: 34px;
+  }
+
+  .brand-logo-wrapper {
+    width: 36px;
+    height: 36px;
+
+    border-radius: 9px;
   }
 }
 </style>

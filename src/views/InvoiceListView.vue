@@ -1,10 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
-
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-
 import { useToast } from "primevue/usetoast";
-
 import { useI18n } from "vue-i18n";
 
 import Toast from "primevue/toast";
@@ -13,33 +10,38 @@ import Button from "primevue/button";
 import InputText from "primevue/inputtext";
 
 import api from "../services/api.js";
-
 import LanguageSwitch from "../components/LanguageSwitch.vue";
 
 const router = useRouter();
 const toast = useToast();
+const { locale } = useI18n();
 
-const { t, locale } = useI18n();
-
-/* =========================================================
+/* =====================================================
    STATE
-========================================================= */
+===================================================== */
 
 const records = ref([]);
-
 const loading = ref(false);
-
 const deletingId = ref(null);
 
 const search = ref("");
 
 const detailVisible = ref(false);
-
 const selectedRecord = ref(null);
 
-/* =========================================================
-   KHMER MONTHS
-========================================================= */
+/* =====================================================
+   PAGINATION
+===================================================== */
+
+const currentPage = ref(1);
+const pageSize = ref(10);
+const pageSizeOptions = [10, 20, 50];
+
+/* =====================================================
+   TRANSLATION
+===================================================== */
+
+const label = (en, km) => (String(locale.value).startsWith("km") ? km : en);
 
 const khmerMonths = [
   "មករា",
@@ -56,131 +58,95 @@ const khmerMonths = [
   "ធ្នូ",
 ];
 
-/* =========================================================
-   FORMAT KHMER DATE
-========================================================= */
-
-const formatKhmerDate = (date, withTime = false) => {
-  const day = String(date.getDate()).padStart(2, "0");
-
-  const month = khmerMonths[date.getMonth()];
-
-  const year = date.getFullYear();
-
-  if (!withTime) {
-    return `${day} ${month} ${year}`;
-  }
-
-  const time = new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-
-    minute: "2-digit",
-
-    hour12: true,
-  }).format(date);
-
-  return `${day} ${month} ${year}, ${time}`;
-};
-
-/* =========================================================
+/* =====================================================
    FORMAT NUMBER
-========================================================= */
+
+   No currency symbol.
+===================================================== */
 
 const formatAmount = (value) => {
   const number = Number(value);
 
-  if (!Number.isFinite(number)) {
-    return "0";
-  }
+  if (!Number.isFinite(number)) return "0";
 
   return new Intl.NumberFormat("en-US", {
-    useGrouping: false,
-
+    useGrouping: true,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(number);
 };
 
-/* =========================================================
-   FULL DATE
-========================================================= */
+/* =====================================================
+   FORMAT DATE
+===================================================== */
 
-const formatDate = (value) => {
-  if (!value) {
-    return "—";
-  }
+const formatDate = (value, withTime = false) => {
+  if (!value) return "—";
 
   const date = new Date(value);
 
-  if (Number.isNaN(date.getTime())) {
-    return "—";
+  if (Number.isNaN(date.getTime())) return "—";
+
+  if (String(locale.value).startsWith("km")) {
+    const dateText =
+      `${date.getDate()} ` +
+      `${khmerMonths[date.getMonth()]} ` +
+      `${date.getFullYear()}`;
+
+    if (!withTime) return dateText;
+
+    const time = new Intl.DateTimeFormat("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date);
+
+    return `${dateText}, ${time}`;
   }
-
-  /* =====================================================
-     KHMER
-  ===================================================== */
-
-  if (locale.value === "km") {
-    return formatKhmerDate(date, true);
-  }
-
-  /* =====================================================
-     ENGLISH
-  ===================================================== */
 
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
-
     day: "2-digit",
-
     year: "numeric",
-
-    hour: "2-digit",
-
-    minute: "2-digit",
-
-    hour12: true,
+    ...(withTime
+      ? {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        }
+      : {}),
   }).format(date);
 };
 
-/* =========================================================
-   TABLE / CARD DATE
-========================================================= */
+/* =====================================================
+   API RESPONSE HELPERS
+===================================================== */
 
-const formatTableDate = (value) => {
-  if (!value) {
-    return "—";
+const unwrapArray = (body) => {
+  if (Array.isArray(body)) return body;
+
+  if (Array.isArray(body?.data?.data)) {
+    return body.data.data;
   }
 
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "—";
+  if (Array.isArray(body?.data)) {
+    return body.data;
   }
 
-  /* =====================================================
-     KHMER
-  ===================================================== */
-
-  if (locale.value === "km") {
-    return formatKhmerDate(date, false);
+  if (Array.isArray(body?.records)) {
+    return body.records;
   }
 
-  /* =====================================================
-     ENGLISH
-  ===================================================== */
+  if (Array.isArray(body?.items)) {
+    return body.items;
+  }
 
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-
-    day: "2-digit",
-
-    year: "numeric",
-  }).format(date);
+  return [];
 };
 
-/* =========================================================
-   CALCULATOR ROWS
-========================================================= */
+/* =====================================================
+   CALCULATION HELPERS
+===================================================== */
 
 const getLines = (record) => {
   if (Array.isArray(record?.calculatorData)) {
@@ -198,115 +164,34 @@ const getLines = (record) => {
   return [];
 };
 
-/* =========================================================
-   CATEGORY NAME
-========================================================= */
-
-const categoryName = (record) => {
-  if (!record) {
-    return "—";
+const nameOf = (value, fallback = "") => {
+  if (value && typeof value === "object") {
+    return String(value.name || fallback);
   }
 
-  /* =====================================================
-     POPULATED CATEGORY
-  ===================================================== */
-
-  if (
-    record.category &&
-    typeof record.category === "object" &&
-    record.category.name
-  ) {
-    return record.category.name;
-  }
-
-  /* =====================================================
-     CATEGORY SNAPSHOT
-  ===================================================== */
-
-  if (record.categoryName) {
-    return record.categoryName;
-  }
-
-  /* =====================================================
-     OLD CATEGORIES ARRAY
-  ===================================================== */
-
-  if (Array.isArray(record.categories)) {
-    for (const category of record.categories) {
-      if (category && typeof category === "object" && category.name) {
-        return category.name;
-      }
-    }
-  }
-
-  /* =====================================================
-     CATEGORY FROM SUB CATEGORY
-  ===================================================== */
-
-  if (Array.isArray(record.subCategories)) {
-    for (const subCategory of record.subCategories) {
-      if (
-        subCategory?.category &&
-        typeof subCategory.category === "object" &&
-        subCategory.category.name
-      ) {
-        return subCategory.category.name;
-      }
-    }
-  }
-
-  return "—";
+  return fallback;
 };
 
-/* =========================================================
-   SUB CATEGORY NAMES
-========================================================= */
+const lineAmount = (item) =>
+  Number(item?.baseValue ?? item?.amount ?? item?.value ?? 0);
 
-const getSubCategoryNames = (record) => {
-  if (!Array.isArray(record?.subCategories)) {
-    return [];
-  }
-
-  return record.subCategories
-    .map((item) => {
-      if (item && typeof item === "object") {
-        return item.name || item.subCategoryName || "";
-      }
-
-      return "";
-    })
-    .filter(Boolean);
-};
-
-/* =========================================================
-   SUB CATEGORY TEXT
-========================================================= */
-
-const subCategoryText = (record) => {
-  const names = getSubCategoryNames(record);
-
-  if (!names.length) {
-    return "—";
-  }
-
-  return names.join(", ");
-};
-
-/* =========================================================
-   EXPRESSION
-========================================================= */
+const lineScore = (item) =>
+  Number(
+    item?.score ??
+      item?.calculatedScore ??
+      item?.totalScore ??
+      item?.result ??
+      0,
+  );
 
 const expressionText = (item) => {
-  if (!item) {
-    return "";
-  }
+  if (!item) return "";
 
   if (item.raw) {
     return String(item.raw).trim().replace(/:\s*$/, "");
   }
 
   const number = String(item.number ?? "");
-
   const prefix = item.prefix || ":";
 
   if (prefix === ">") {
@@ -320,74 +205,257 @@ const expressionText = (item) => {
   return number;
 };
 
-/* =========================================================
-   ENTERED AMOUNT
-========================================================= */
+const sumRows = (rows) =>
+  rows.reduce((total, item) => total + lineScore(item), 0);
 
-const lineAmount = (item) => {
-  return Number(item?.baseValue ?? item?.amount ?? item?.value ?? 0);
+/* =====================================================
+   NORMALIZE SUBCATEGORY GROUP
+===================================================== */
+
+const normalizeSubGroup = (sub) => {
+  let names = [];
+
+  if (Array.isArray(sub?.subCategoryNames) && sub.subCategoryNames.length) {
+    names = sub.subCategoryNames;
+  } else if (Array.isArray(sub?.subCategories)) {
+    names = sub.subCategories.map((item) => nameOf(item, "")).filter(Boolean);
+  } else if (sub?.subCategoryName) {
+    names = [sub.subCategoryName];
+  } else if (sub?.subCategory) {
+    names = [nameOf(sub.subCategory)];
+  }
+
+  return {
+    subCategoryNames: names.filter(Boolean),
+    calculatorData: getLines(sub),
+    groupScore: sub?.groupScore,
+  };
 };
 
-/* =========================================================
-   SCORE
-========================================================= */
+/* =====================================================
+   NORMALIZE INVOICE FORMATS
 
-const lineScore = (item) => {
-  return Number(
-    item?.score ??
-      item?.calculatedScore ??
-      item?.totalScore ??
-      item?.result ??
-      0,
+   Supports:
+   - New grouped invoices
+   - Previous grouped invoices
+   - Legacy single-category invoices
+===================================================== */
+
+const getMainGroups = (record) => {
+  if (!record) return [];
+
+  if (Array.isArray(record.groups) && record.groups.length) {
+    return record.groups.map((main) => {
+      const mainName = main.categoryName || nameOf(main.category) || "—";
+
+      if (Array.isArray(main.subGroups) && main.subGroups.length) {
+        return {
+          categoryName: mainName,
+          subGroups: main.subGroups.map(normalizeSubGroup),
+          groupScore: main.groupScore,
+        };
+      }
+
+      const names = Array.isArray(main.subCategoryNames)
+        ? main.subCategoryNames
+        : Array.isArray(main.subCategories)
+          ? main.subCategories.map((item) => nameOf(item, "")).filter(Boolean)
+          : [];
+
+      return {
+        categoryName: mainName,
+        subGroups: [
+          {
+            subCategoryNames: names,
+            calculatorData: getLines(main),
+            groupScore: main.groupScore,
+          },
+        ],
+        groupScore: main.groupScore,
+      };
+    });
+  }
+
+  const mainName =
+    record.categoryName ||
+    nameOf(record.category) ||
+    record.selectedCategory?.name ||
+    "—";
+
+  const names = Array.isArray(record.subCategories)
+    ? record.subCategories.map((item) => nameOf(item, "")).filter(Boolean)
+    : [];
+
+  return [
+    {
+      categoryName: mainName,
+      subGroups: [
+        {
+          subCategoryNames: names,
+          calculatorData: getLines(record),
+          groupScore: record.grandScore,
+        },
+      ],
+      groupScore: record.grandScore,
+    },
+  ];
+};
+
+/* =====================================================
+   MAIN CATEGORY NAMES
+===================================================== */
+
+const getMainCategoryNames = (record) => [
+  ...new Set(
+    getMainGroups(record)
+      .map((main) => String(main.categoryName || "").trim())
+      .filter((name) => name.length > 0 && name !== "—"),
+  ),
+];
+
+const mainCategoryText = (record) => {
+  const names = getMainCategoryNames(record);
+
+  return names.length ? names.join(", ") : "—";
+};
+
+/* =====================================================
+   INVOICE DETAIL TITLE
+
+   Example:
+   ព័ត៌មានវិក្កយបត្រ (យប់)
+===================================================== */
+
+const invoiceDetailTitle = (record) => {
+  const title = label("Invoice Detail", "ព័ត៌មានវិក្កយបត្រ");
+
+  const names = getMainCategoryNames(record);
+
+  if (!names.length) return title;
+
+  return `${title} (${names.join(", ")})`;
+};
+
+/* =====================================================
+   RECEIPT GROUPS
+===================================================== */
+
+const getReceiptGroups = (record) =>
+  getMainGroups(record).flatMap((main) =>
+    main.subGroups
+      .filter(
+        (group) =>
+          Array.isArray(group.calculatorData) &&
+          group.calculatorData.length > 0,
+      )
+      .map((group) => ({
+        subCategoryNames: group.subCategoryNames,
+        calculatorData: group.calculatorData,
+        groupScore: group.groupScore,
+      })),
+  );
+
+/* =====================================================
+   SUBCATEGORY TITLE
+===================================================== */
+
+const subGroupTitle = (group) => {
+  const names = group?.subCategoryNames || [];
+
+  return names.length ? names.join(", ") : label("Entries", "ទិន្នន័យ");
+};
+
+/* =====================================================
+   TOTALS
+===================================================== */
+
+const subGroupTotal = (group) => {
+  const saved = Number(group.groupScore);
+
+  if (group.groupScore != null && Number.isFinite(saved)) {
+    return saved;
+  }
+
+  return sumRows(group.calculatorData || []);
+};
+
+const mainGroupTotal = (main) => {
+  const saved = Number(main.groupScore);
+
+  if (main.groupScore != null && Number.isFinite(saved)) {
+    return saved;
+  }
+
+  return main.subGroups.reduce(
+    (total, group) => total + subGroupTotal(group),
+    0,
   );
 };
 
-/* =========================================================
-   TOTAL
-========================================================= */
-
 const recordTotal = (record) => {
-  if (!record) {
-    return 0;
+  const saved = Number(record?.grandScore);
+
+  if (record?.grandScore != null && Number.isFinite(saved)) {
+    return saved;
   }
 
-  const calculatedTotal = getLines(record).reduce(
-    (total, item) => total + lineScore(item),
+  return getMainGroups(record).reduce(
+    (total, main) => total + mainGroupTotal(main),
+    0,
+  );
+};
 
+/* =====================================================
+   INVOICE SUMMARY
+===================================================== */
+
+const receiptGroupText = (record) => {
+  const groups = getReceiptGroups(record);
+
+  if (!groups.length) return "—";
+
+  return groups.map((group) => subGroupTitle(group)).join(" · ");
+};
+
+const entryCount = (record) =>
+  getReceiptGroups(record).reduce(
+    (total, group) => total + group.calculatorData.length,
     0,
   );
 
-  const savedTotal = Number(record.grandScore);
+const previewLines = (record) =>
+  getReceiptGroups(record).flatMap((group) =>
+    group.calculatorData.map((item) => ({
+      ...item,
+      groupName: subGroupTitle(group),
+    })),
+  );
 
-  if (Number.isFinite(savedTotal) && savedTotal !== 0) {
-    return savedTotal;
-  }
-
-  return calculatedTotal;
-};
-
-/* =========================================================
-   FILTER
-========================================================= */
+/* =====================================================
+   SEARCH
+===================================================== */
 
 const filteredRecords = computed(() => {
   const keyword = search.value.trim().toLowerCase();
 
-  if (!keyword) {
-    return records.value;
-  }
+  if (!keyword) return records.value;
 
   return records.value.filter((record) => {
+    const lines = previewLines(record);
+
     const searchable = [
-      categoryName(record),
+      mainCategoryText(record),
+      receiptGroupText(record),
+      formatDate(record.createdAt),
+      formatAmount(recordTotal(record)),
 
-      subCategoryText(record),
-
-      formatTableDate(record.createdAt),
-
-      recordTotal(record),
-
-      ...getLines(record).map((item) => expressionText(item)),
+      ...lines.flatMap((item) => [
+        expressionText(item),
+        String(lineAmount(item)),
+        formatAmount(lineAmount(item)),
+        String(lineScore(item)),
+        formatAmount(lineScore(item)),
+      ]),
     ]
       .join(" ")
       .toLowerCase();
@@ -396,47 +464,132 @@ const filteredRecords = computed(() => {
   });
 });
 
-/* =========================================================
-   LOAD RECORDS
-========================================================= */
+/* =====================================================
+   PAGINATION
+===================================================== */
+
+const totalRecords = computed(() => filteredRecords.value.length);
+
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(totalRecords.value / pageSize.value)),
+);
+
+const paginatedRecords = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+
+  return filteredRecords.value.slice(start, start + pageSize.value);
+});
+
+const pageStart = computed(() => {
+  if (!totalRecords.value) return 0;
+
+  return (currentPage.value - 1) * pageSize.value + 1;
+});
+
+const pageEnd = computed(() =>
+  Math.min(currentPage.value * pageSize.value, totalRecords.value),
+);
+
+const visiblePageNumbers = computed(() => {
+  const total = totalPages.value;
+  const current = currentPage.value;
+
+  const start = Math.max(1, Math.min(current - 2, total - 4));
+
+  const end = Math.min(total, start + 4);
+
+  return Array.from(
+    {
+      length: end - start + 1,
+    },
+    (_, index) => start + index,
+  );
+});
+
+const changePage = (page) => {
+  const next = Number(page);
+
+  if (!Number.isInteger(next)) return;
+
+  currentPage.value = Math.min(totalPages.value, Math.max(1, next));
+};
+
+const changePageSize = (value) => {
+  const next = Number(value);
+
+  if (!pageSizeOptions.includes(next)) return;
+
+  pageSize.value = next;
+  currentPage.value = 1;
+};
+
+watch(search, () => {
+  currentPage.value = 1;
+});
+
+watch(totalPages, (pages) => {
+  if (currentPage.value > pages) {
+    currentPage.value = pages;
+  }
+});
+
+/* =====================================================
+   LOAD INVOICES
+===================================================== */
 
 const loadRecords = async () => {
+  loading.value = true;
+
   try {
-    loading.value = true;
+    const [oldResult, newResult] = await Promise.allSettled([
+      api.get("/number-cal"),
+      api.get("/batch-invoices"),
+    ]);
 
-    const response = await api.get("/number-cal");
-
-    console.log("INVOICE RESPONSE:", response.data);
-
-    if (Array.isArray(response.data?.data)) {
-      records.value = response.data.data;
-
-      return;
+    if (oldResult.status === "rejected" && newResult.status === "rejected") {
+      throw new Error("Unable to load invoices.");
     }
 
-    if (Array.isArray(response.data)) {
-      records.value = response.data;
+    const oldRecords =
+      oldResult.status === "fulfilled"
+        ? unwrapArray(oldResult.value.data).map((item) => ({
+            ...item,
+            _source: "legacy",
+          }))
+        : [];
 
-      return;
+    const newRecords =
+      newResult.status === "fulfilled"
+        ? unwrapArray(newResult.value.data).map((item) => ({
+            ...item,
+            _source: "batch",
+          }))
+        : [];
+
+    records.value = [...oldRecords, ...newRecords].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    currentPage.value = 1;
+
+    if (oldResult.status === "rejected" || newResult.status === "rejected") {
+      toast.add({
+        severity: "warn",
+        summary: label(
+          "Some invoices could not be loaded",
+          "វិក្កយបត្រខ្លះមិនអាចទាញយកបាន",
+        ),
+        life: 2500,
+      });
     }
-
-    if (Array.isArray(response.data?.records)) {
-      records.value = response.data.records;
-
-      return;
-    }
-
-    records.value = [];
   } catch (error) {
     console.error("LOAD INVOICE ERROR:", error);
 
     toast.add({
       severity: "error",
-
-      summary: t("invoice.loadFailed"),
-
-      detail: error.response?.data?.message || t("invoice.loadFailedDetail"),
-
+      summary: label("Unable to load invoices", "មិនអាចទាញយកវិក្កយបត្របាន"),
+      detail: error.response?.data?.message || error.message,
       life: 2500,
     });
   } finally {
@@ -444,65 +597,60 @@ const loadRecords = async () => {
   }
 };
 
-/* =========================================================
-   OPEN DETAIL
-========================================================= */
+/* =====================================================
+   OPEN / CLOSE DETAIL
+===================================================== */
 
 const openDetail = (record) => {
   selectedRecord.value = record;
-
   detailVisible.value = true;
 };
 
-/* =========================================================
-   CLOSE DETAIL
-========================================================= */
-
 const closeDetail = () => {
   detailVisible.value = false;
-
   selectedRecord.value = null;
 };
 
-/* =========================================================
-   DELETE
-========================================================= */
+/* =====================================================
+   DELETE INVOICE
+===================================================== */
 
 const deleteRecord = async (record) => {
-  if (!record?._id) {
-    return;
-  }
+  if (!record?._id || deletingId.value) return;
+
+  const endpoint =
+    record._source === "batch"
+      ? `/batch-invoices/${record._id}`
+      : `/number-cal/${record._id}`;
+
+  deletingId.value = record._id;
 
   try {
-    deletingId.value = record._id;
+    await api.delete(endpoint);
 
-    await api.delete(`/number-cal/${record._id}`);
+    records.value = records.value.filter(
+      (item) => !(item._id === record._id && item._source === record._source),
+    );
 
-    records.value = records.value.filter((item) => item._id !== record._id);
-
-    if (selectedRecord.value?._id === record._id) {
+    if (
+      selectedRecord.value?._id === record._id &&
+      selectedRecord.value?._source === record._source
+    ) {
       closeDetail();
     }
 
     toast.add({
       severity: "success",
-
-      summary: t("invoice.deleted"),
-
-      detail: t("invoice.deleteSuccess"),
-
-      life: 1500,
+      summary: label("Deleted", "បានលុប"),
+      life: 1800,
     });
   } catch (error) {
-    console.error("DELETE ERROR:", error);
+    console.error("DELETE INVOICE ERROR:", error);
 
     toast.add({
       severity: "error",
-
-      summary: t("invoice.deleteFailed"),
-
-      detail: error.response?.data?.message || t("invoice.deleteFailedDetail"),
-
+      summary: label("Unable to delete invoice", "មិនអាចលុបវិក្កយបត្របាន"),
+      detail: error.response?.data?.message || error.message,
       life: 2500,
     });
   } finally {
@@ -510,103 +658,86 @@ const deleteRecord = async (record) => {
   }
 };
 
-/* =========================================================
-   BACK
-========================================================= */
-
-const goBack = () => {
-  router.push("/");
-};
-
-/* =========================================================
-   INIT
-========================================================= */
-
-onMounted(() => {
-  loadRecords();
-});
+onMounted(loadRecords);
 </script>
 
 <template>
   <div class="min-h-screen bg-slate-50">
     <Toast />
 
-    <!-- ===================================================
-         HEADER
-    ==================================================== -->
+    <!-- HEADER -->
 
     <header class="sticky top-0 z-20 border-b border-slate-200 bg-white">
       <div
         class="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-3 sm:px-5"
       >
-        <!-- BACK -->
-
-        <button
-          type="button"
-          class="header-button"
-          :title="$t('common.back')"
-          @click="goBack"
-        >
+        <button type="button" class="header-button" @click="router.push('/')">
           <i class="pi pi-arrow-left" />
         </button>
 
-        <!-- TITLE -->
-
         <div class="min-w-0 flex-1 text-center">
-          <h1 class="truncate text-sm font-bold text-slate-900 sm:text-base">
-            {{ $t("invoice.title") }}
+          <h1 class="text-sm font-bold text-slate-900 sm:text-base">
+            {{ label("Invoice List", "បញ្ជីវិក្កយបត្រ") }}
           </h1>
 
           <p class="text-[9px] text-slate-400">
-            {{ $t("invoice.savedRecords") }}
+            {{ label("Saved records", "ទិន្នន័យដែលបានរក្សាទុក") }}
           </p>
         </div>
-
-        <!-- LANGUAGE -->
 
         <LanguageSwitch />
       </div>
     </header>
 
-    <!-- ===================================================
-         MAIN
-    ==================================================== -->
+    <!-- MAIN -->
 
     <main class="mx-auto max-w-6xl px-3 py-4 sm:px-5">
-      <!-- =================================================
-           SEARCH
-      ================================================== -->
+      <!-- SEARCH + PAGE SIZE -->
 
-      <div class="mb-3">
-        <div class="relative">
+      <div
+        class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="relative min-w-0 flex-1">
           <i class="pi pi-search search-icon" />
 
           <InputText
             v-model="search"
-            :placeholder="$t('invoice.searchPlaceholder')"
+            :placeholder="label('Search invoices...', 'ស្វែងរកវិក្កយបត្រ...')"
             class="search-input w-full"
           />
         </div>
+
+        <div class="flex items-center justify-between gap-2 sm:justify-end">
+          <span class="whitespace-nowrap text-xs text-slate-500">
+            {{ label("Rows per page", "ចំនួនក្នុងមួយទំព័រ") }}
+          </span>
+
+          <select
+            :value="pageSize"
+            class="page-size-select"
+            @change="changePageSize($event.target.value)"
+          >
+            <option v-for="size in pageSizeOptions" :key="size" :value="size">
+              {{ size }}
+            </option>
+          </select>
+        </div>
       </div>
 
-      <!-- =================================================
-           LOADING
-      ================================================== -->
+      <!-- LOADING -->
 
       <section
         v-if="loading"
         class="rounded-xl border border-slate-200 bg-white py-16 text-center"
       >
-        <i class="pi pi-spin pi-spinner text-xl text-green-600" />
+        <i class="pi pi-spin pi-spinner text-xl text-blue-500" />
 
         <p class="mt-2 text-xs text-slate-400">
-          {{ $t("invoice.loading") }}
+          {{ label("Loading...", "កំពុងទាញយក...") }}
         </p>
       </section>
 
-      <!-- =================================================
-           EMPTY
-      ================================================== -->
+      <!-- EMPTY -->
 
       <section
         v-else-if="!filteredRecords.length"
@@ -615,89 +746,89 @@ onMounted(() => {
         <i class="pi pi-file text-2xl text-slate-300" />
 
         <p class="mt-2 text-sm font-semibold text-slate-700">
-          {{ $t("invoice.noRecords") }}
+          {{ label("No records found", "មិនមានទិន្នន័យ") }}
         </p>
       </section>
 
-      <!-- =================================================
-           RECORDS
-      ================================================== -->
-
       <template v-else>
-        <!-- =================================================
-             DESKTOP TABLE
-        ================================================== -->
+        <!-- DESKTOP TABLE -->
 
         <section
           class="hidden overflow-hidden rounded-xl border border-slate-200 bg-white sm:block"
         >
           <div class="overflow-x-auto">
-            <table class="w-full min-w-[720px]">
+            <table class="w-full min-w-[850px]">
               <thead>
                 <tr class="border-b border-slate-200 bg-slate-50">
                   <th class="table-heading">
-                    {{ $t("invoice.category") }}
+                    {{ label("Main Category", "ប្រភេទមេ") }}
                   </th>
 
                   <th class="table-heading">
-                    {{ $t("invoice.subCategories") }}
-                  </th>
-
-                  <th class="table-heading">
-                    {{ $t("invoice.date") }}
-                  </th>
-
-                  <th class="table-heading text-right">
-                    {{ $t("invoice.total") }}
+                    {{ label("Subcategory Groups", "ក្រុមប្រភេទរង") }}
                   </th>
 
                   <th class="table-heading text-center">
-                    {{ $t("invoice.action") }}
+                    {{ label("Entries", "ចំនួនទិន្នន័យ") }}
+                  </th>
+
+                  <th class="table-heading">
+                    {{ label("Date", "កាលបរិច្ឆេទ") }}
+                  </th>
+
+                  <th class="table-heading text-right">
+                    {{ label("Total", "សរុប") }}
+                  </th>
+
+                  <th class="table-heading text-center">
+                    {{ label("Action", "សកម្មភាព") }}
                   </th>
                 </tr>
               </thead>
 
               <tbody>
                 <tr
-                  v-for="record in filteredRecords"
-                  :key="record._id"
+                  v-for="record in paginatedRecords"
+                  :key="`${record._source}-${record._id}`"
                   class="invoice-row"
                   @click="openDetail(record)"
                 >
-                  <!-- CATEGORY -->
+                  <!-- MAIN CATEGORY -->
 
                   <td class="table-cell">
                     <div class="flex items-center gap-3">
                       <div class="category-icon">
-                        <i class="pi pi-tag" />
+                        <i class="pi pi-folder" />
                       </div>
 
-                      <div class="min-w-0">
-                        <p class="text-sm font-bold text-slate-800">
-                          {{ categoryName(record) }}
-                        </p>
-
-                        <p class="mt-0.5 text-[9px] text-slate-400">
-                          {{ getLines(record).length }}
-
-                          {{ $t("invoice.entries") }}
-                        </p>
-                      </div>
+                      <strong class="text-sm font-bold text-slate-800">
+                        {{ mainCategoryText(record) }}
+                      </strong>
                     </div>
                   </td>
 
-                  <!-- SUB CATEGORY -->
+                  <!-- SUBCATEGORY GROUPS -->
 
                   <td class="table-cell">
-                    <span class="text-xs text-slate-600">
-                      {{ subCategoryText(record) }}
+                    <p
+                      class="max-w-[240px] break-words text-xs font-semibold text-slate-600"
+                    >
+                      {{ receiptGroupText(record) }}
+                    </p>
+                  </td>
+
+                  <!-- ENTRY COUNT -->
+
+                  <td class="table-cell text-center">
+                    <span class="text-xs font-semibold text-slate-600">
+                      {{ entryCount(record) }}
                     </span>
                   </td>
 
                   <!-- DATE -->
 
-                  <td class="table-cell text-slate-500">
-                    {{ formatTableDate(record.createdAt) }}
+                  <td class="table-cell whitespace-nowrap text-slate-500">
+                    {{ formatDate(record.createdAt) }}
                   </td>
 
                   <!-- TOTAL -->
@@ -708,14 +839,14 @@ onMounted(() => {
                     </strong>
                   </td>
 
-                  <!-- ACTION -->
+                  <!-- ACTIONS -->
 
                   <td class="table-cell">
                     <div class="flex items-center justify-center gap-1">
                       <button
                         type="button"
                         class="action-button view"
-                        :title="$t('invoice.viewDetail')"
+                        :title="label('View', 'មើល')"
                         @click.stop="openDetail(record)"
                       >
                         <i class="pi pi-eye" />
@@ -724,16 +855,17 @@ onMounted(() => {
                       <button
                         type="button"
                         class="action-button delete"
-                        :title="$t('common.delete')"
+                        :title="label('Delete', 'លុប')"
                         :disabled="deletingId === record._id"
                         @click.stop="deleteRecord(record)"
                       >
                         <i
-                          v-if="deletingId !== record._id"
-                          class="pi pi-trash"
+                          :class="
+                            deletingId === record._id
+                              ? 'pi pi-spin pi-spinner'
+                              : 'pi pi-trash'
+                          "
                         />
-
-                        <i v-else class="pi pi-spin pi-spinner" />
                       </button>
                     </div>
                   </td>
@@ -743,45 +875,42 @@ onMounted(() => {
           </div>
         </section>
 
-        <!-- =================================================
-             MOBILE CARDS
-        ================================================== -->
+        <!-- MOBILE CARDS -->
 
         <section class="space-y-2 sm:hidden">
           <article
-            v-for="record in filteredRecords"
-            :key="record._id"
+            v-for="record in paginatedRecords"
+            :key="`${record._source}-${record._id}`"
             class="invoice-card"
             @click="openDetail(record)"
           >
-            <!-- TOP -->
+            <!-- MAIN CATEGORY + TOTAL -->
 
             <div class="flex items-start justify-between gap-3">
-              <!-- CATEGORY -->
-
-              <div class="flex min-w-0 items-center gap-2.5">
+              <div class="flex min-w-0 items-center gap-2">
                 <div class="mobile-category-icon">
-                  <i class="pi pi-tag" />
+                  <i class="pi pi-folder" />
                 </div>
 
                 <div class="min-w-0">
-                  <p class="truncate text-sm font-bold text-slate-900">
-                    {{ categoryName(record) }}
+                  <p class="break-words text-sm font-bold text-slate-900">
+                    {{ mainCategoryText(record) }}
                   </p>
 
-                  <p class="mt-0.5 text-[9px] text-slate-400">
-                    {{ getLines(record).length }}
+                  <p class="mt-1 break-words text-xs text-slate-500">
+                    {{ receiptGroupText(record) }}
+                  </p>
 
-                    {{ $t("invoice.entries") }}
+                  <p class="mt-1 text-[10px] text-slate-400">
+                    {{ entryCount(record) }}
+                    {{ label("entries", "ទិន្នន័យ") }}
                   </p>
                 </div>
               </div>
 
-              <!-- TOTAL -->
-
               <div class="shrink-0 text-right">
                 <p class="mobile-label">
-                  {{ $t("invoice.total") }}
+                  {{ label("Total", "សរុប") }}
                 </p>
 
                 <strong class="mobile-total">
@@ -790,71 +919,53 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- INFO -->
+            <!-- DATE -->
 
-            <div class="mt-3 grid grid-cols-2 gap-2">
-              <!-- SUB CATEGORY -->
+            <div class="mt-3 rounded-lg bg-slate-50 px-3 py-2">
+              <p class="mobile-label">
+                {{ label("Date", "កាលបរិច្ឆេទ") }}
+              </p>
 
-              <div class="mobile-info-box">
-                <p class="mobile-label">
-                  {{ $t("invoice.subCategories") }}
-                </p>
-
-                <p class="mt-1 truncate text-xs font-semibold text-slate-700">
-                  {{ subCategoryText(record) }}
-                </p>
-              </div>
-
-              <!-- DATE -->
-
-              <div class="mobile-info-box">
-                <p class="mobile-label">
-                  {{ $t("invoice.date") }}
-                </p>
-
-                <p class="mt-1 text-xs font-semibold text-slate-700">
-                  {{ formatTableDate(record.createdAt) }}
-                </p>
-              </div>
+              <p class="mt-1 text-xs font-semibold text-slate-700">
+                {{ formatDate(record.createdAt) }}
+              </p>
             </div>
 
-            <!-- CALCULATION PREVIEW -->
+            <!-- ENTRY PREVIEW -->
 
             <div
-              v-if="getLines(record).length"
+              v-if="previewLines(record).length"
               class="mt-3 border-t border-slate-100 pt-3"
             >
               <div
-                v-for="(item, index) in getLines(record).slice(0, 2)"
-                :key="item._id || index"
+                v-for="(item, index) in previewLines(record).slice(0, 2)"
+                :key="index"
                 class="mobile-calculation-row"
               >
-                <span class="font-semibold text-slate-700">
-                  {{ expressionText(item) }}
+                <span class="max-w-[75px] truncate text-slate-400">
+                  {{ item.groupName }}
                 </span>
 
-                <span class="text-slate-400"> : </span>
-
-                <span class="text-slate-500">
+                <span class="font-semibold text-slate-800">
+                  {{ expressionText(item) }}:
                   {{ formatAmount(lineAmount(item)) }}
                 </span>
 
-                <strong class="ml-auto text-slate-900">
+                <strong class="ml-auto text-blue-400">
                   {{ formatAmount(lineScore(item)) }}
                 </strong>
               </div>
 
               <p
-                v-if="getLines(record).length > 2"
-                class="mt-1 text-[9px] text-slate-400"
+                v-if="entryCount(record) > 2"
+                class="mt-2 text-[10px] text-slate-400"
               >
-                +{{ getLines(record).length - 2 }}
-
-                {{ $t("invoice.entries") }}
+                +{{ entryCount(record) - 2 }}
+                {{ label("more entries", "ទិន្នន័យផ្សេងទៀត") }}
               </p>
             </div>
 
-            <!-- ACTION -->
+            <!-- ACTIONS -->
 
             <div
               class="mt-3 flex items-center justify-between border-t border-slate-100 pt-2"
@@ -865,10 +976,7 @@ onMounted(() => {
                 @click.stop="openDetail(record)"
               >
                 <i class="pi pi-eye" />
-
-                <span>
-                  {{ $t("invoice.viewDetail") }}
-                </span>
+                {{ label("View", "មើល") }}
               </button>
 
               <button
@@ -877,23 +985,88 @@ onMounted(() => {
                 :disabled="deletingId === record._id"
                 @click.stop="deleteRecord(record)"
               >
-                <i v-if="deletingId !== record._id" class="pi pi-trash" />
+                <i
+                  :class="
+                    deletingId === record._id
+                      ? 'pi pi-spin pi-spinner'
+                      : 'pi pi-trash'
+                  "
+                />
 
-                <i v-else class="pi pi-spin pi-spinner" />
-
-                <span>
-                  {{ $t("common.delete") }}
-                </span>
+                {{ label("Delete", "លុប") }}
               </button>
             </div>
           </article>
         </section>
+
+        <!-- PAGINATION -->
+
+        <div class="pagination-container">
+          <p class="text-xs text-slate-500">
+            {{ label("Showing", "បង្ហាញ") }}
+            {{ pageStart }}–{{ pageEnd }}
+            {{ label("of", "នៃ") }}
+            {{ totalRecords }}
+            {{ label("records", "ទិន្នន័យ") }}
+          </p>
+
+          <div class="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              class="page-button"
+              :disabled="currentPage === 1"
+              @click="changePage(1)"
+            >
+              <i class="pi pi-angle-double-left" />
+            </button>
+
+            <button
+              type="button"
+              class="page-button"
+              :disabled="currentPage === 1"
+              @click="changePage(currentPage - 1)"
+            >
+              <i class="pi pi-angle-left" />
+            </button>
+
+            <button
+              v-for="page in visiblePageNumbers"
+              :key="page"
+              type="button"
+              class="page-button"
+              :class="{
+                active: currentPage === page,
+              }"
+              @click="changePage(page)"
+            >
+              {{ page }}
+            </button>
+
+            <button
+              type="button"
+              class="page-button"
+              :disabled="currentPage >= totalPages"
+              @click="changePage(currentPage + 1)"
+            >
+              <i class="pi pi-angle-right" />
+            </button>
+
+            <button
+              type="button"
+              class="page-button"
+              :disabled="currentPage >= totalPages"
+              @click="changePage(totalPages)"
+            >
+              <i class="pi pi-angle-double-right" />
+            </button>
+          </div>
+        </div>
       </template>
     </main>
 
-    <!-- ===================================================
-         DETAIL
-    ==================================================== -->
+    <!-- =====================================================
+         INVOICE DETAIL
+    ====================================================== -->
 
     <Dialog
       v-model:visible="detailVisible"
@@ -901,103 +1074,93 @@ onMounted(() => {
       :draggable="false"
       :show-header="false"
       :style="{
-        width: 'min(94vw, 540px)',
+        width: 'min(94vw, 560px)',
       }"
     >
       <div v-if="selectedRecord" class="invoice-detail">
         <!-- HEADER -->
 
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-bold text-slate-900">
-              {{ $t("invoice.detail") }}
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <h2 class="receipt-title">
+              {{ invoiceDetailTitle(selectedRecord) }}
             </h2>
 
-            <p class="mt-1 text-xs text-slate-400">
-              {{ formatDate(selectedRecord.createdAt) }}
+            <p class="receipt-date">
+              {{ formatDate(selectedRecord.createdAt, true) }}
             </p>
           </div>
 
-          <button
-            type="button"
-            class="close-button"
-            :title="$t('common.close')"
-            @click="closeDetail"
-          >
+          <button type="button" class="close-button" @click="closeDetail">
             <i class="pi pi-times" />
           </button>
         </div>
 
-        <!-- CATEGORY -->
+        <!-- RECEIPT BODY -->
 
-        <div class="mt-7 border-t-2 border-slate-900 pt-3">
-          <h3 class="text-3xl font-black tracking-tight text-slate-900">
-            {{ categoryName(selectedRecord) }}
-          </h3>
+        <div class="receipt-body">
+          <!-- SUBCATEGORY GROUPS -->
 
-          <p
-            v-if="getSubCategoryNames(selectedRecord).length"
-            class="mt-1 text-xs text-slate-500"
+          <section
+            v-for="(group, groupIndex) in getReceiptGroups(selectedRecord)"
+            :key="groupIndex"
+            class="receipt-group"
           >
-            <span class="font-semibold text-slate-700">
-              {{ getSubCategoryNames(selectedRecord).join(", ") }}
-            </span>
-          </p>
-        </div>
+            <!-- GROUP HEADER -->
 
-        <!-- CALCULATIONS -->
+            <h3 class="receipt-group-title">
+              {{ subGroupTitle(group) }}
+            </h3>
 
-        <div class="mt-5">
-          <table class="w-full">
-            <tbody>
-              <tr
-                v-for="(item, index) in getLines(selectedRecord)"
+            <!-- CALCULATION ROWS -->
+
+            <div class="receipt-rows">
+              <div
+                v-for="(item, index) in group.calculatorData"
                 :key="item._id || index"
+                class="receipt-row"
               >
-                <td class="py-1.5">
-                  <div class="flex items-baseline">
-                    <span class="detail-expression">
-                      {{ expressionText(item) }}
-                    </span>
+                <!-- NUMBER + AMOUNT TOGETHER -->
 
-                    <span class="detail-colon"> : </span>
+                <div class="receipt-entry">
+                  <span class="receipt-number">
+                    {{ expressionText(item) }}
+                  </span>
 
-                    <span class="detail-amount">
-                      {{ formatAmount(lineAmount(item)) }}
-                    </span>
-                  </div>
-                </td>
+                  <span class="receipt-colon">:</span>
 
-                <td class="py-1.5 text-right">
-                  <strong class="detail-score">
-                    {{ formatAmount(lineScore(item)) }}
-                  </strong>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                  <span class="receipt-amount">
+                    {{ formatAmount(lineAmount(item)) }}
+                  </span>
+                </div>
 
-        <!-- TOTAL -->
+                <!-- RESULT ALIGNED TO FAR RIGHT -->
 
-        <div
-          class="mt-5 flex items-center justify-between border-t-2 border-slate-900 pt-4"
-        >
-          <span class="text-xl font-bold text-slate-900">
-            {{ $t("invoice.total") }}
-            :
-          </span>
+                <strong class="receipt-result">
+                  {{ formatAmount(lineScore(item)) }}
+                </strong>
+              </div>
+            </div>
+          </section>
 
-          <strong class="text-3xl font-black text-slate-900">
-            {{ formatAmount(recordTotal(selectedRecord)) }}
-          </strong>
+          <!-- GRAND TOTAL -->
+
+          <div class="receipt-grand-total">
+            <span>
+              {{ label("Total:", "សរុប:") }}
+            </span>
+
+            <strong>
+              {{ formatAmount(recordTotal(selectedRecord)) }}
+            </strong>
+          </div>
         </div>
 
         <!-- CLOSE -->
 
         <div class="mt-8 flex justify-end">
           <Button
-            :label="$t('common.close')"
+            :label="label('Close', 'បិទ')"
             severity="secondary"
             text
             @click="closeDetail"
@@ -1009,23 +1172,17 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* ========================================================
+/* =====================================================
    HEADER
-======================================================== */
+===================================================== */
 
 .header-button {
   display: flex;
-
   width: 36px;
   height: 36px;
-
-  flex-shrink: 0;
-
   align-items: center;
   justify-content: center;
-
   border-radius: 9px;
-
   color: #64748b;
 }
 
@@ -1033,66 +1190,65 @@ onMounted(() => {
   background: #f1f5f9;
 }
 
-/* ========================================================
+/* =====================================================
    SEARCH
-======================================================== */
+===================================================== */
 
 .search-icon {
   position: absolute;
-
   left: 12px;
   top: 50%;
-
   z-index: 2;
-
   transform: translateY(-50%);
-
   font-size: 11px;
-
   color: #94a3b8;
 }
 
 .search-input {
   min-height: 42px;
-
   padding-left: 34px !important;
-
   border-radius: 10px;
-
   font-size: 12px;
 }
 
-/* ========================================================
+/* =====================================================
+   PAGE SIZE
+===================================================== */
+
+.page-size-select {
+  min-width: 74px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: white;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* =====================================================
    DESKTOP TABLE
-======================================================== */
+===================================================== */
 
 .table-heading {
-  padding: 11px 14px;
-
+  padding: 12px 14px;
   text-align: left;
-
-  font-size: 9px;
-
+  font-size: 10px;
   font-weight: 700;
-
   text-transform: uppercase;
-
   letter-spacing: 0.03em;
-
   color: #94a3b8;
 }
 
 .table-cell {
-  padding: 12px 14px;
-
-  font-size: 11px;
+  padding: 13px 14px;
+  font-size: 12px;
 }
 
 .invoice-row {
   cursor: pointer;
-
   border-bottom: 1px solid #f1f5f9;
-
   transition: background-color 0.15s;
 }
 
@@ -1104,43 +1260,42 @@ onMounted(() => {
   background: #f8fafc;
 }
 
-/* ========================================================
+/* =====================================================
    CATEGORY ICON
-======================================================== */
+===================================================== */
 
-.category-icon {
+.category-icon,
+.mobile-category-icon {
   display: flex;
-
-  width: 34px;
-  height: 34px;
-
   flex-shrink: 0;
-
   align-items: center;
   justify-content: center;
-
-  border-radius: 8px;
-
+  border-radius: 9px;
   background: #f0fdf4;
-
   color: #16a34a;
 }
 
-/* ========================================================
-   DESKTOP ACTION
-======================================================== */
+.category-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.mobile-category-icon {
+  width: 38px;
+  height: 38px;
+}
+
+/* =====================================================
+   ACTION BUTTONS
+===================================================== */
 
 .action-button {
   display: inline-flex;
-
   width: 32px;
   height: 32px;
-
   align-items: center;
   justify-content: center;
-
   border-radius: 8px;
-
   font-size: 12px;
 }
 
@@ -1150,8 +1305,6 @@ onMounted(() => {
 
 .action-button.view:hover {
   background: #f1f5f9;
-
-  color: #0f172a;
 }
 
 .action-button.delete {
@@ -1160,206 +1313,115 @@ onMounted(() => {
 
 .action-button.delete:hover {
   background: #fef2f2;
-
-  color: #dc2626;
 }
 
-.action-button:disabled {
-  cursor: not-allowed;
-
-  opacity: 0.5;
-}
-
-/* ========================================================
-   MOBILE CARD
-======================================================== */
+/* =====================================================
+   MOBILE CARDS
+===================================================== */
 
 .invoice-card {
-  cursor: pointer;
-
   padding: 14px;
-
   border: 1px solid #e2e8f0;
-
   border-radius: 14px;
-
   background: white;
-
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s,
-    transform 0.15s;
+  cursor: pointer;
 }
-
-.invoice-card:active {
-  border-color: #bbf7d0;
-
-  background: #fafafa;
-
-  transform: scale(0.995);
-}
-
-/* ========================================================
-   MOBILE CATEGORY ICON
-======================================================== */
-
-.mobile-category-icon {
-  display: flex;
-
-  width: 38px;
-  height: 38px;
-
-  flex-shrink: 0;
-
-  align-items: center;
-  justify-content: center;
-
-  border-radius: 10px;
-
-  background: #f0fdf4;
-
-  color: #16a34a;
-
-  font-size: 14px;
-}
-
-/* ========================================================
-   MOBILE LABEL
-======================================================== */
 
 .mobile-label {
-  font-size: 8px;
-
+  font-size: 9px;
   font-weight: 700;
-
   text-transform: uppercase;
-
-  letter-spacing: 0.03em;
-
   color: #94a3b8;
 }
 
-/* ========================================================
-   MOBILE TOTAL
-======================================================== */
-
 .mobile-total {
   display: block;
-
   margin-top: 2px;
-
   font-size: 18px;
-
-  line-height: 1;
-
   font-weight: 900;
-
   color: #0f172a;
 }
 
-/* ========================================================
-   MOBILE INFO
-======================================================== */
-
-.mobile-info-box {
-  min-width: 0;
-
-  padding: 9px 10px;
-
-  border-radius: 9px;
-
-  background: #f8fafc;
-}
-
-/* ========================================================
-   MOBILE CALCULATION
-======================================================== */
-
 .mobile-calculation-row {
   display: flex;
-
+  min-height: 27px;
   align-items: baseline;
-
-  gap: 5px;
-
-  min-height: 25px;
-
+  gap: 6px;
   font-size: 11px;
 }
 
-/* ========================================================
-   MOBILE VIEW BUTTON
-======================================================== */
+.mobile-view-button,
+.mobile-delete-button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
 
 .mobile-view-button {
-  display: inline-flex;
-
-  min-height: 32px;
-
-  align-items: center;
-  justify-content: center;
-
-  gap: 6px;
-
-  padding: 0 8px;
-
-  border-radius: 8px;
-
-  font-size: 10px;
-
-  font-weight: 600;
-
   color: #15803d;
 }
 
-.mobile-view-button:active {
-  background: #f0fdf4;
-}
-
-/* ========================================================
-   MOBILE DELETE
-======================================================== */
-
 .mobile-delete-button {
-  display: inline-flex;
-
-  min-height: 32px;
-
-  align-items: center;
-  justify-content: center;
-
-  gap: 6px;
-
-  padding: 0 8px;
-
-  border-radius: 8px;
-
-  font-size: 10px;
-
-  font-weight: 600;
-
   color: #ef4444;
 }
 
-.mobile-delete-button:active:not(:disabled) {
-  background: #fef2f2;
+/* =====================================================
+   PAGINATION
+===================================================== */
+
+.pagination-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 4px;
 }
 
-.mobile-delete-button:disabled {
+.page-button {
+  display: inline-flex;
+  min-width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.page-button:hover:not(:disabled) {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #2563eb;
+}
+
+.page-button.active {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: white;
+}
+
+.page-button:disabled {
   cursor: not-allowed;
-
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
-/* ========================================================
+/* =====================================================
    DIALOG
-======================================================== */
+===================================================== */
 
 :deep(.p-dialog) {
   overflow: hidden;
-
   border-radius: 16px;
 }
 
@@ -1368,133 +1430,259 @@ onMounted(() => {
 }
 
 .invoice-detail {
-  padding: 28px;
+  padding: 26px;
+  color: #0f172a;
 }
 
-/* ========================================================
-   CLOSE
-======================================================== */
+.receipt-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.receipt-date {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.6;
+}
 
 .close-button {
   display: flex;
-
   width: 36px;
   height: 36px;
-
   flex-shrink: 0;
-
   align-items: center;
   justify-content: center;
-
   border-radius: 8px;
-
-  color: #64748b;
-
   font-size: 18px;
+  color: #64748b;
 }
 
 .close-button:hover {
   background: #f1f5f9;
 }
 
-/* ========================================================
-   DETAIL
-======================================================== */
+/* =====================================================
+   RECEIPT BODY
+===================================================== */
 
-.detail-expression {
-  font-size: 25px;
-
-  line-height: 1.25;
-
-  font-weight: 800;
-
-  color: #0f172a;
+.receipt-body {
+  margin-top: 22px;
 }
 
-.detail-colon {
-  margin-left: 6px;
-  margin-right: 7px;
+.receipt-group {
+  margin-bottom: 15px;
+}
 
+/* SUBCATEGORY HEADER */
+
+.receipt-group-title {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  margin: 0;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: #f1f3f5;
   font-size: 22px;
+  line-height: 1.2;
+  font-weight: 900;
+  color: #111827;
+  overflow-wrap: anywhere;
+}
 
+/* =====================================================
+   RECEIPT ROW
+
+   Number: Amount               Result
+
+   Example:
+   10>15: 10                       180
+===================================================== */
+
+.receipt-rows {
+  padding: 0 2px;
+}
+
+.receipt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 12px;
+  min-height: 46px;
+  padding: 8px 10px;
+
+  border-bottom: 1px solid #e5e7eb;
+}
+
+/* NUMBER + AMOUNT GROUP */
+
+.receipt-entry {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+
+  min-width: 0;
+  gap: 0;
+}
+
+/* NUMBER */
+
+.receipt-number {
+  font-size: 17px;
+  line-height: 1.35;
   font-weight: 800;
+  color: #111827;
 
-  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
-.detail-amount {
-  font-size: 20px;
+/* COLON */
 
-  font-weight: 700;
+.receipt-colon {
+  margin-right: 6px;
 
-  color: #64748b;
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 800;
+  color: #111827;
 }
 
-.detail-score {
-  font-size: 25px;
+/* ENTERED AMOUNT */
 
-  line-height: 1.25;
+.receipt-amount {
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 800;
+  color: #111827;
 
+  font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================
+   INDIVIDUAL CALCULATION RESULT
+   BLUE-400
+===================================================== */
+
+.receipt-result {
+  flex-shrink: 0;
+  margin-left: auto;
+
+  text-align: right;
+  font-size: 17px;
+  line-height: 1.35;
   font-weight: 900;
 
-  color: #0f172a;
+  color: #60a5fa;
+
+  font-variant-numeric: tabular-nums;
 }
 
-/* ========================================================
-   SMALL MOBILE
-======================================================== */
+/* =====================================================
+   GRAND TOTAL
+   BLUE-600
+===================================================== */
 
-@media (max-width: 380px) {
-  .invoice-card {
-    padding: 11px;
+.receipt-grand-total {
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 8px 0;
+
+  border-top: 2px solid #111827;
+}
+
+.receipt-grand-total span {
+  font-size: 23px;
+  font-weight: 900;
+  color: #111827;
+}
+
+.receipt-grand-total strong {
+  text-align: right;
+  font-size: 27px;
+  line-height: 1.2;
+  font-weight: 900;
+
+  color: #2563eb;
+
+  font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================
+   GENERAL
+===================================================== */
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* =====================================================
+   MOBILE RESPONSIVE
+===================================================== */
+
+@media (max-width: 480px) {
+  .invoice-detail {
+    padding: 18px;
   }
 
-  .mobile-category-icon {
-    width: 34px;
-    height: 34px;
+  .receipt-title {
+    font-size: 16px;
+    line-height: 1.7;
+  }
 
-    font-size: 12px;
+  .receipt-date {
+    font-size: 10px;
+  }
+
+  .receipt-group-title {
+    min-height: 34px;
+    padding: 5px 10px;
+    font-size: 20px;
+  }
+
+  .receipt-row {
+    gap: 8px;
+    min-height: 42px;
+    padding: 7px 4px;
+  }
+
+  .receipt-number,
+  .receipt-colon,
+  .receipt-amount,
+  .receipt-result {
+    font-size: 16px;
+  }
+
+  .receipt-grand-total span {
+    font-size: 22px;
+  }
+
+  .receipt-grand-total strong {
+    font-size: 25px;
   }
 
   .mobile-total {
     font-size: 16px;
   }
 
-  .mobile-info-box {
-    padding: 8px;
+  .pagination-container {
+    flex-direction: column;
+    align-items: stretch;
   }
 
-  .mobile-calculation-row {
-    font-size: 10px;
-  }
-}
-
-/* ========================================================
-   DIALOG MOBILE
-======================================================== */
-
-@media (max-width: 480px) {
-  .invoice-detail {
-    padding: 20px;
-  }
-
-  .detail-expression {
-    font-size: 21px;
-  }
-
-  .detail-colon {
-    margin-left: 4px;
-    margin-right: 5px;
-
-    font-size: 19px;
-  }
-
-  .detail-amount {
-    font-size: 17px;
-  }
-
-  .detail-score {
-    font-size: 21px;
+  .pagination-container > div {
+    justify-content: center;
   }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useToast } from "primevue/usetoast";
@@ -16,9 +16,9 @@ const { locale } = useI18n();
 
 const label = (en, km) => (String(locale.value).startsWith("km") ? km : en);
 
-/* =====================================================
+/* =========================================
    STATE
-===================================================== */
+========================================= */
 
 const categories = ref([]);
 const allSubCategories = ref([]);
@@ -26,26 +26,6 @@ const allSubCategories = ref([]);
 const selectedCategoryId = ref("");
 const selectedSubCategoryIds = ref([]);
 const lastSelections = ref({});
-
-/*
-  Invoice draft:
-
-  [
-    {
-      category: "...",
-      categoryName: "...",
-      subGroups: [
-        {
-          groupKey: "...",
-          subCategories: ["id1", "id2"],
-          subCategoryNames: ["ABCD", "AC"],
-          calculatorData: [],
-          groupScore: 0
-        }
-      ]
-    }
-  ]
-*/
 const invoiceGroups = ref([]);
 
 const currentNumber = ref("");
@@ -60,11 +40,17 @@ const saving = ref(false);
 
 const busy = computed(() => loading.value || previewing.value || saving.value);
 
-/* =====================================================
+/* =========================================
    HELPERS
-===================================================== */
+========================================= */
 
 const idOf = (value) => String(value?._id ?? value?.id ?? value ?? "");
+
+const normalizeIds = (values) =>
+  [...new Set((values || []).map(idOf).filter(Boolean))].sort();
+
+const makeGroupKey = (categoryId, ids) =>
+  `${categoryId}::${normalizeIds(ids).join("|")}`;
 
 const formatAmount = (value) => {
   const number = Number(value);
@@ -97,40 +83,24 @@ const notify = (severity, en, km, detail = "") => {
     severity,
     summary: label(en, km),
     detail,
-    life: 2500,
+    life: 3000,
   });
 };
 
-/*
-  Selection order does not matter.
-
-  ABCD + AC + AB
-  AB + ABCD + AC
-
-  Both resolve to the same group.
-*/
-const normalizeIds = (values) =>
-  [...new Set((values || []).map(idOf).filter(Boolean))].sort();
-
-const makeGroupKey = (categoryId, ids) =>
-  `${categoryId}::${normalizeIds(ids).join("|")}`;
-
-/* =====================================================
+/* =========================================
    CATEGORY DATA
-===================================================== */
+========================================= */
 
 const selectedCategory = computed(() =>
   categories.value.find((item) => idOf(item) === selectedCategoryId.value),
 );
 
-const subCategoriesForActive = computed(() => {
-  if (!selectedCategoryId.value) return [];
-
-  return allSubCategories.value.filter(
+const subCategoriesForActive = computed(() =>
+  allSubCategories.value.filter(
     (item) =>
       idOf(item.category ?? item.categoryId) === selectedCategoryId.value,
-  );
-});
+  ),
+);
 
 const selectedSubCategoryNames = computed(() =>
   subCategoriesForActive.value
@@ -138,17 +108,15 @@ const selectedSubCategoryNames = computed(() =>
     .map((item) => item.name),
 );
 
-/* =====================================================
+/* =========================================
    ACTIVE GROUP
-===================================================== */
+========================================= */
 
-const activeGroupKey = computed(() => {
-  if (!selectedCategoryId.value || !selectedSubCategoryIds.value.length) {
-    return "";
-  }
-
-  return makeGroupKey(selectedCategoryId.value, selectedSubCategoryIds.value);
-});
+const activeGroupKey = computed(() =>
+  selectedCategoryId.value && selectedSubCategoryIds.value.length
+    ? makeGroupKey(selectedCategoryId.value, selectedSubCategoryIds.value)
+    : "",
+);
 
 const activeMainGroup = computed(() =>
   invoiceGroups.value.find(
@@ -170,52 +138,47 @@ const activeGroupTotal = computed(() =>
   Number(activeSubGroup.value?.groupScore || 0),
 );
 
-/* =====================================================
+/* =========================================
    INVOICE SUMMARY
-===================================================== */
+========================================= */
 
 const mainGroupTotal = (main) =>
-  main.subGroups.reduce(
-    (total, group) => total + Number(group.groupScore || 0),
-    0,
-  );
+  main.subGroups.reduce((sum, group) => sum + Number(group.groupScore || 0), 0);
 
 const invoiceCategoryCount = computed(() => invoiceGroups.value.length);
 
 const invoiceSubGroupCount = computed(() =>
-  invoiceGroups.value.reduce((total, main) => total + main.subGroups.length, 0),
+  invoiceGroups.value.reduce((sum, main) => sum + main.subGroups.length, 0),
 );
 
 const invoiceEntryCount = computed(() =>
   invoiceGroups.value.reduce(
-    (total, main) =>
-      total +
-      main.subGroups.reduce(
-        (count, group) => count + group.calculatorData.length,
-        0,
-      ),
+    (sum, main) =>
+      sum +
+      main.subGroups.reduce((n, group) => n + group.calculatorData.length, 0),
     0,
   ),
 );
 
 const invoiceGrandTotal = computed(() =>
-  invoiceGroups.value.reduce((total, main) => total + mainGroupTotal(main), 0),
+  invoiceGroups.value.reduce((sum, main) => sum + mainGroupTotal(main), 0),
 );
 
-/* =====================================================
-   LOAD
-===================================================== */
+/* =========================================
+   LOAD DATA
+========================================= */
 
 const loadCategories = async () => {
   loading.value = true;
 
   try {
-    const [categoryResponse, subResponse] = await Promise.all([
+    const [categoriesResponse, subResponse] = await Promise.all([
       api.get("/categories"),
       api.get("/sub-categories"),
     ]);
 
-    categories.value = unwrapArray(categoryResponse.data);
+    categories.value = unwrapArray(categoriesResponse.data);
+
     allSubCategories.value = unwrapArray(subResponse.data);
   } catch (error) {
     console.error("LOAD CATEGORIES ERROR:", error);
@@ -231,9 +194,9 @@ const loadCategories = async () => {
   }
 };
 
-/* =====================================================
-   INPUT
-===================================================== */
+/* =========================================
+   CLEAR INPUT
+========================================= */
 
 const clearCurrentInput = () => {
   currentNumber.value = "";
@@ -243,18 +206,16 @@ const clearCurrentInput = () => {
   activeInput.value = "number";
 };
 
-/* =====================================================
-   SELECT MAIN CATEGORY
-
-   Never delete previous draft groups.
-===================================================== */
+/* =========================================
+   CATEGORY SELECTION
+========================================= */
 
 const selectCategory = (value) => {
   if (busy.value) return;
 
-  const categoryId = idOf(value);
+  const id = idOf(value);
 
-  if (categoryId === selectedCategoryId.value) return;
+  if (id === selectedCategoryId.value) return;
 
   if (selectedCategoryId.value) {
     lastSelections.value[selectedCategoryId.value] = [
@@ -262,40 +223,28 @@ const selectCategory = (value) => {
     ];
   }
 
-  selectedCategoryId.value = categoryId;
+  selectedCategoryId.value = id;
 
-  selectedSubCategoryIds.value = [...(lastSelections.value[categoryId] || [])];
+  selectedSubCategoryIds.value = [...(lastSelections.value[id] || [])];
 
   clearCurrentInput();
 };
 
-/* =====================================================
-   MULTI-SELECT SUBCATEGORIES
-
-   Each exact combination is an independent group.
-===================================================== */
-
 const toggleSubCategory = (value) => {
-  if (busy.value || !selectedCategoryId.value) return;
+  if (busy.value || !selectedCategoryId.value) {
+    return;
+  }
 
   const id = idOf(value);
 
-  if (selectedSubCategoryIds.value.includes(id)) {
-    selectedSubCategoryIds.value = selectedSubCategoryIds.value.filter(
-      (selected) => selected !== id,
-    );
-  } else {
-    selectedSubCategoryIds.value = [...selectedSubCategoryIds.value, id];
-  }
+  selectedSubCategoryIds.value = selectedSubCategoryIds.value.includes(id)
+    ? selectedSubCategoryIds.value.filter((item) => item !== id)
+    : [...selectedSubCategoryIds.value, id];
 
   lastSelections.value[selectedCategoryId.value] = [
     ...selectedSubCategoryIds.value,
   ];
 
-  /*
-    Existing draft rows automatically appear if this
-    selection matches a previously saved combination.
-  */
   clearCurrentInput();
 };
 
@@ -311,16 +260,16 @@ const clearSubCategorySelection = () => {
   clearCurrentInput();
 };
 
-/* =====================================================
-   KEYPAD
-===================================================== */
+/* =========================================
+   CALCULATOR KEYPAD
+========================================= */
 
 const appendDigits = (digit) => {
-  if (busy.value) return;
+  if (busy.value || !/^\d$/.test(String(digit))) {
+    return;
+  }
 
   const value = String(digit);
-
-  if (!/^\d$/.test(value)) return;
 
   if (activeInput.value === "amount") {
     if (baseValue.value.length < 12) {
@@ -330,6 +279,13 @@ const appendDigits = (digit) => {
     if (endNumber.value.length < 3) {
       endNumber.value += value;
     }
+
+    if (
+      currentNumber.value.length >= 2 &&
+      endNumber.value.length >= currentNumber.value.length
+    ) {
+      activeInput.value = "amount";
+    }
   } else if (currentNumber.value.length < 3) {
     currentNumber.value += value;
   }
@@ -338,12 +294,22 @@ const appendDigits = (digit) => {
 const selectPrefix = (prefix) => {
   if (busy.value) return;
 
-  if (!currentNumber.value) {
-    notify("warn", "Enter a number first", "សូមបញ្ចូលលេខជាមុន");
+  if (!/^\d{2,3}$/.test(currentNumber.value)) {
+    notify(
+      "warn",
+      "Enter a 2 or 3 digit number first",
+      "សូមបញ្ចូលលេខ ២ ឬ ៣ ខ្ទង់ជាមុន",
+    );
     return;
   }
 
+  if (selectedPrefix.value !== prefix) {
+    endNumber.value = "";
+    baseValue.value = "";
+  }
+
   selectedPrefix.value = prefix;
+
   activeInput.value = prefix === ">" ? "end" : "amount";
 };
 
@@ -351,9 +317,17 @@ const backspace = () => {
   if (busy.value) return;
 
   if (activeInput.value === "amount") {
-    baseValue.value = baseValue.value.slice(0, -1);
+    if (baseValue.value) {
+      baseValue.value = baseValue.value.slice(0, -1);
+    } else {
+      activeInput.value = selectedPrefix.value === ">" ? "end" : "number";
+    }
   } else if (activeInput.value === "end") {
-    endNumber.value = endNumber.value.slice(0, -1);
+    if (endNumber.value) {
+      endNumber.value = endNumber.value.slice(0, -1);
+    } else {
+      activeInput.value = "number";
+    }
   } else {
     currentNumber.value = currentNumber.value.slice(0, -1);
   }
@@ -377,14 +351,13 @@ const rawExpression = computed(() => {
   return currentNumber.value;
 });
 
-/* =====================================================
-   PREVIEW
-
-   Reuse your existing backend calculation logic.
-===================================================== */
+/* =========================================
+   PREVIEW CALCULATION
+========================================= */
 
 const parsePreviewLines = (response) => {
   const body = response?.data ?? response;
+
   const result = body?.data?.data ?? body?.data ?? body;
 
   if (Array.isArray(result)) return result;
@@ -402,14 +375,11 @@ const previewRows = async (categoryId, ids, rows) => {
   const response = await api.post("/number-cal/preview", {
     category: categoryId,
 
-    /*
-      Important: an ARRAY of selected subcategories.
-    */
     subCategories: normalizeIds(ids),
 
-    calculatorData: rows.map((item) => ({
-      raw: String(item.raw || "").trim(),
-      baseValue: Number(item.baseValue),
+    calculatorData: rows.map((row) => ({
+      raw: String(row.raw || "").trim(),
+      baseValue: Number(row.baseValue),
     })),
   });
 
@@ -437,14 +407,13 @@ const previewRows = async (categoryId, ids, rows) => {
   });
 };
 
-/* =====================================================
-   STAGE / PRE-SAVE GROUP
-
-   Only updates frontend memory.
-===================================================== */
+/* =========================================
+   STAGE GROUP
+========================================= */
 
 const stageGroup = (categoryId, selectedIds, rows) => {
   const ids = normalizeIds(selectedIds);
+
   const key = makeGroupKey(categoryId, ids);
 
   let main = invoiceGroups.value.find((item) => item.category === categoryId);
@@ -452,9 +421,6 @@ const stageGroup = (categoryId, selectedIds, rows) => {
   const existingIndex =
     main?.subGroups.findIndex((item) => item.groupKey === key) ?? -1;
 
-  /*
-    Removing the final row also removes its group.
-  */
   if (!rows.length) {
     if (main && existingIndex >= 0) {
       main.subGroups.splice(existingIndex, 1);
@@ -490,12 +456,11 @@ const stageGroup = (categoryId, selectedIds, rows) => {
     subCategories: ids,
     subCategoryNames,
 
-    calculatorData: rows.map((item) => ({ ...item })),
+    calculatorData: rows.map((item) => ({
+      ...item,
+    })),
 
-    groupScore: rows.reduce(
-      (total, item) => total + Number(item.score || 0),
-      0,
-    ),
+    groupScore: rows.reduce((sum, item) => sum + Number(item.score || 0), 0),
   };
 
   if (existingIndex >= 0) {
@@ -505,11 +470,9 @@ const stageGroup = (categoryId, selectedIds, rows) => {
   }
 };
 
-/* =====================================================
+/* =========================================
    ADD ENTRY
-
-   This is the pre-save step.
-===================================================== */
+========================================= */
 
 const addEntry = async () => {
   if (busy.value) return;
@@ -534,7 +497,7 @@ const addEntry = async () => {
   }
 
   if (!selectedPrefix.value) {
-    notify("warn", "Select an operator", "សូមជ្រើសរើសសញ្ញាគណនា");
+    notify("warn", "Choose an operator", "សូមជ្រើសរើសសញ្ញាគណនា");
     return;
   }
 
@@ -549,8 +512,10 @@ const addEntry = async () => {
 
   const amount = Number(baseValue.value);
 
-  if (!Number.isFinite(amount) || amount <= 0) {
+  if (!baseValue.value || !Number.isFinite(amount) || amount <= 0) {
     notify("warn", "Enter a valid amount", "សូមបញ្ចូលចំនួនឱ្យបានត្រឹមត្រូវ");
+
+    activeInput.value = "amount";
     return;
   }
 
@@ -568,13 +533,17 @@ const addEntry = async () => {
   previewing.value = true;
 
   try {
-    const result = await previewRows(
+    const calculated = await previewRows(
       selectedCategoryId.value,
       selectedSubCategoryIds.value,
       rows,
     );
 
-    stageGroup(selectedCategoryId.value, selectedSubCategoryIds.value, result);
+    stageGroup(
+      selectedCategoryId.value,
+      selectedSubCategoryIds.value,
+      calculated,
+    );
 
     clearCurrentInput();
   } catch (error) {
@@ -591,18 +560,20 @@ const addEntry = async () => {
   }
 };
 
-/* =====================================================
-   DELETE ROW / GROUP
-===================================================== */
+/* =========================================
+   DELETE ENTRY / GROUP
+========================================= */
 
 const removeEntry = (index) => {
-  if (busy.value || !activeSubGroup.value) return;
+  if (busy.value || !activeSubGroup.value) {
+    return;
+  }
 
-  const remaining = calculatorData.value.filter(
-    (_, rowIndex) => rowIndex !== index,
+  stageGroup(
+    selectedCategoryId.value,
+    selectedSubCategoryIds.value,
+    calculatorData.value.filter((_, i) => i !== index),
   );
-
-  stageGroup(selectedCategoryId.value, selectedSubCategoryIds.value, remaining);
 };
 
 const removeSubGroup = (categoryId, ids) => {
@@ -619,12 +590,6 @@ const removeMainGroup = (categoryId) => {
   );
 };
 
-/* =====================================================
-   EDIT GROUP
-
-   Restore the selected set, not only one subcategory.
-===================================================== */
-
 const editGroup = (categoryId, ids) => {
   if (busy.value) return;
 
@@ -635,15 +600,31 @@ const editGroup = (categoryId, ids) => {
 
   clearCurrentInput();
 
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo({
+    top: 0,
+    behavior: "smooth",
+  });
 };
 
-/* =====================================================
-   RESET
-===================================================== */
+/* =========================================
+   RESET INVOICE
+========================================= */
 
 const resetInvoice = () => {
-  if (busy.value) return;
+  if (busy.value || !invoiceGroups.value.length) {
+    return;
+  }
+
+  if (
+    !window.confirm(
+      label(
+        "Delete all unsaved invoice entries?",
+        "តើអ្នកចង់លុបទិន្នន័យព្រាងទាំងអស់មែនទេ?",
+      ),
+    )
+  ) {
+    return;
+  }
 
   invoiceGroups.value = [];
   lastSelections.value = {};
@@ -654,12 +635,14 @@ const resetInvoice = () => {
   clearCurrentInput();
 };
 
-/* =====================================================
-   SAVE ONE INVOICE
-===================================================== */
+/* =========================================
+   SAVE INVOICE
+========================================= */
 
 const saveCalculation = async () => {
-  if (busy.value || !invoiceGroups.value.length) return;
+  if (busy.value || !invoiceGroups.value.length) {
+    return;
+  }
 
   saving.value = true;
 
@@ -670,10 +653,8 @@ const saveCalculation = async () => {
         categoryName: main.categoryName,
 
         subGroups: main.subGroups.map((group) => ({
-          /*
-            Multiple subcategories belong to ONE subgroup.
-          */
           subCategories: [...group.subCategories],
+
           subCategoryNames: [...group.subCategoryNames],
 
           calculatorData: group.calculatorData.map((item) => ({
@@ -684,9 +665,6 @@ const saveCalculation = async () => {
       })),
     };
 
-    /*
-      One request. One invoice document.
-    */
     await api.post("/batch-invoices", payload);
 
     invoiceGroups.value = [];
@@ -718,19 +696,68 @@ const saveCalculation = async () => {
   }
 };
 
-onMounted(loadCategories);
+/* =========================================
+   KEYBOARD SUPPORT
+========================================= */
+
+const onKeydown = (event) => {
+  if (busy.value) return;
+
+  const target = event.target;
+
+  if (
+    target instanceof HTMLElement &&
+    target.closest("input, textarea, select, [contenteditable='true']")
+  ) {
+    return;
+  }
+
+  if (/^\d$/.test(event.key)) {
+    event.preventDefault();
+    appendDigits(event.key);
+  } else if (event.key === "Backspace") {
+    event.preventDefault();
+    backspace();
+  } else if ([">", ":", "x", "X", "*"].includes(event.key)) {
+    event.preventDefault();
+
+    selectPrefix(event.key === "*" || event.key === "X" ? "x" : event.key);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    addEntry();
+  } else if (event.key === "Escape") {
+    clearCurrentInput();
+  }
+};
+
+onMounted(() => {
+  loadCategories();
+
+  window.addEventListener("keydown", onKeydown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
+});
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50">
+  <div class="calculator-page min-h-screen bg-slate-50 text-slate-800">
     <Toast />
 
     <!-- HEADER -->
-    <header class="sticky top-0 z-20 border-b border-slate-200 bg-white">
+    <header
+      class="page-header sticky top-0 z-30 border-b border-slate-200 bg-white"
+    >
       <div
-        class="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-3 sm:px-5"
+        class="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2 sm:px-5 sm:py-3"
       >
-        <button type="button" class="header-button" @click="router.push('/')">
+        <button
+          type="button"
+          class="header-button"
+          :aria-label="label('Back', 'ត្រឡប់ក្រោយ')"
+          @click="router.push('/')"
+        >
           <i class="pi pi-arrow-left" />
         </button>
 
@@ -752,11 +779,12 @@ onMounted(loadCategories);
       </div>
     </header>
 
-    <main class="mx-auto max-w-6xl px-3 py-4 sm:px-5">
-      <!-- MAIN CATEGORY + MULTI-SUBCATEGORY -->
-      <section class="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+    <main class="page-main mx-auto max-w-6xl px-3 pb-5 pt-3 sm:px-5 sm:pt-4">
+      <!-- CATEGORY SELECTION -->
+      <section
+        class="category-section mb-3 rounded-xl border border-slate-200 bg-white p-3"
+      >
         <div class="grid gap-3 sm:grid-cols-2">
-          <!-- MAIN CATEGORY -->
           <div>
             <label class="input-label">
               {{ label("Main Category", "ប្រភេទមេ") }}
@@ -782,8 +810,8 @@ onMounted(loadCategories);
             </select>
           </div>
 
-          <!-- MULTI SUBCATEGORIES -->
-          <div>
+          <!-- SUBCATEGORIES -->
+          <div class="min-w-0">
             <div class="mb-1.5 flex items-center justify-between gap-2">
               <label class="input-label !mb-0">
                 {{
@@ -797,7 +825,7 @@ onMounted(loadCategories);
               <button
                 v-if="selectedSubCategoryIds.length"
                 type="button"
-                class="text-[10px] font-semibold text-red-500"
+                class="shrink-0 text-[11px] font-semibold text-red-500"
                 :disabled="busy"
                 @click="clearSubCategorySelection"
               >
@@ -805,8 +833,7 @@ onMounted(loadCategories);
               </button>
             </div>
 
-            <!-- SELECT MANY AT ONCE -->
-            <div class="flex min-h-10 flex-wrap gap-1.5">
+            <div class="subcategory-viewport flex min-h-10 gap-1.5">
               <button
                 v-for="sub in subCategoriesForActive"
                 :key="idOf(sub)"
@@ -829,7 +856,7 @@ onMounted(loadCategories);
 
             <p
               v-if="selectedCategoryId"
-              class="mt-2 text-[10px] text-slate-500"
+              class="selected-line mt-1 text-[11px] text-slate-500"
             >
               {{ label("Selected:", "បានជ្រើសរើស:") }}
               {{ selectedSubCategoryNames.join(", ") || "—" }}
@@ -838,12 +865,12 @@ onMounted(loadCategories);
         </div>
       </section>
 
-      <!-- PRE-SAVED GROUP INDICATOR -->
+      <!-- PRE-SAVED GROUPS -->
       <div
         v-if="invoiceGroups.length"
-        class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-green-100 bg-green-50 px-3 py-2"
+        class="draft-strip mb-3 flex items-center gap-2 rounded-lg border border-green-100 bg-green-50 px-3 py-2"
       >
-        <span class="text-xs font-semibold text-green-800">
+        <span class="shrink-0 text-xs font-semibold text-green-800">
           {{ label("Pre-saved groups", "ក្រុមដែលបានរក្សាទុកបណ្តោះអាសន្ន") }}:
         </span>
 
@@ -852,7 +879,7 @@ onMounted(loadCategories);
             v-for="group in main.subGroups"
             :key="group.groupKey"
             type="button"
-            class="draft-chip"
+            class="draft-chip shrink-0"
             :class="{
               active: activeGroupKey === group.groupKey,
             }"
@@ -862,13 +889,12 @@ onMounted(loadCategories);
             {{ main.categoryName }}
             /
             {{ group.subCategoryNames.join(" + ") }}
-
             ({{ group.calculatorData.length }})
           </button>
         </template>
       </div>
 
-      <!-- EXISTING CALCULATOR PANELS -->
+      <!-- ORIGINAL TWO-COLUMN CALCULATOR -->
       <div class="calculator-layout">
         <!-- ENTRY PANEL -->
         <section class="entry-panel">
@@ -877,6 +903,7 @@ onMounted(loadCategories);
               type="button"
               class="toolbar-button"
               :disabled="busy"
+              :aria-label="label('Clear input', 'សម្អាតការបញ្ចូល')"
               @click="clearCurrentInput"
             >
               <i class="pi pi-refresh" />
@@ -888,7 +915,8 @@ onMounted(loadCategories);
               {{ selectedCategory?.name || label("Entries", "ទិន្នន័យ") }}
 
               <span v-if="selectedSubCategoryNames.length">
-                / {{ selectedSubCategoryNames.join(", ") }}
+                /
+                {{ selectedSubCategoryNames.join(", ") }}
               </span>
             </strong>
 
@@ -896,12 +924,14 @@ onMounted(loadCategories);
               type="button"
               class="toolbar-button danger"
               :disabled="busy"
+              :aria-label="label('Reset invoice', 'សម្អាតវិក្កយបត្រ')"
               @click="resetInvoice"
             >
               <i class="pi pi-trash" />
             </button>
           </div>
 
+          <!-- SCROLLABLE ENTRIES -->
           <div class="entry-list">
             <div
               v-for="(item, index) in calculatorData"
@@ -909,11 +939,11 @@ onMounted(loadCategories);
               class="entry-row"
             >
               <div class="entry-content">
-                <span class="entry-expression">
+                <span class="entry-expression" :title="item.raw">
                   {{ item.raw }}
                 </span>
 
-                <span class="entry-colon">:</span>
+                <span class="entry-colon"> : </span>
 
                 <strong class="entry-amount">
                   {{ formatAmount(item.baseValue) }}
@@ -923,6 +953,7 @@ onMounted(loadCategories);
                   type="button"
                   class="entry-delete-button"
                   :disabled="busy"
+                  :aria-label="label('Delete entry', 'លុបទិន្នន័យ')"
                   @click="removeEntry(index)"
                 >
                   <i class="pi pi-trash" />
@@ -932,7 +963,7 @@ onMounted(loadCategories);
 
             <p
               v-if="!calculatorData.length"
-              class="px-3 py-8 text-center text-xs text-slate-400"
+              class="px-2 py-8 text-center text-xs text-slate-400"
             >
               {{
                 label("Enter numbers to begin", "សូមបញ្ចូលលេខដើម្បីចាប់ផ្តើម")
@@ -940,6 +971,7 @@ onMounted(loadCategories);
             </p>
           </div>
 
+          <!-- ENTRY TOTAL -->
           <div class="entry-footer">
             <strong>
               {{ formatAmount(activeGroupTotal) }}
@@ -955,7 +987,7 @@ onMounted(loadCategories);
         <!-- KEYPAD PANEL -->
         <section class="control-panel">
           <div class="number-display">
-            <div class="mb-3 flex items-center justify-between">
+            <div class="number-heading mb-3 flex items-center justify-between">
               <span class="text-xs font-semibold text-slate-500">
                 {{ label("Number", "លេខ") }}
               </span>
@@ -970,18 +1002,21 @@ onMounted(loadCategories);
               </button>
             </div>
 
+            <!-- NUMBER -->
             <button
               type="button"
               class="display-field"
               :class="{
                 selected: activeInput === 'number',
               }"
+              :disabled="busy"
               @click="activeInput = 'number'"
             >
               {{ currentNumber || "00" }}
             </button>
 
-            <div class="mt-3 grid grid-cols-3 gap-2">
+            <!-- OPERATORS -->
+            <div class="operator-row mt-3 grid grid-cols-3 gap-2">
               <button
                 v-for="operator in ['>', 'x', ':']"
                 :key="operator"
@@ -997,7 +1032,8 @@ onMounted(loadCategories);
               </button>
             </div>
 
-            <div v-if="selectedPrefix === '>'" class="mt-3">
+            <!-- END NUMBER -->
+            <div v-if="selectedPrefix === '>'" class="extra-field mt-3">
               <label class="input-label">
                 {{ label("End Number", "លេខបញ្ចប់") }}
               </label>
@@ -1008,13 +1044,15 @@ onMounted(loadCategories);
                 :class="{
                   selected: activeInput === 'end',
                 }"
+                :disabled="busy"
                 @click="activeInput = 'end'"
               >
                 {{ endNumber || "00" }}
               </button>
             </div>
 
-            <div class="mt-3">
+            <!-- AMOUNT -->
+            <div class="extra-field mt-3">
               <label class="input-label">
                 {{ label("Amount", "ចំនួន") }}
               </label>
@@ -1025,14 +1063,18 @@ onMounted(loadCategories);
                 :class="{
                   selected: activeInput === 'amount',
                 }"
+                :disabled="busy"
                 @click="activeInput = 'amount'"
               >
                 {{ baseValue || "0" }}
               </button>
             </div>
 
-            <div class="mt-3 rounded-lg bg-slate-50 p-2 text-right">
-              <span class="text-sm font-bold text-slate-700">
+            <!-- CURRENT EXPRESSION -->
+            <div
+              class="expression-preview mt-3 rounded-lg bg-slate-50 p-2 text-right"
+            >
+              <span class="font-bold text-slate-700">
                 {{ rawExpression || "—" }}
                 :
                 {{ baseValue || "0" }}
@@ -1040,6 +1082,7 @@ onMounted(loadCategories);
             </div>
           </div>
 
+          <!-- KEYPAD -->
           <div class="keypad">
             <button
               v-for="digit in ['7', '8', '9', '4', '5', '6', '1', '2', '3']"
@@ -1056,6 +1099,7 @@ onMounted(loadCategories);
               type="button"
               class="keypad-button"
               :disabled="busy"
+              :aria-label="label('Clear input', 'សម្អាតការបញ្ចូល')"
               @click="clearCurrentInput"
             >
               <i class="pi pi-times" />
@@ -1074,17 +1118,19 @@ onMounted(loadCategories);
               type="button"
               class="keypad-button"
               :disabled="busy"
+              :aria-label="label('Backspace', 'លុបលេខចុងក្រោយ')"
               @click="backspace"
             >
               <i class="pi pi-delete-left" />
             </button>
           </div>
 
+          <!-- ADD ENTRY -->
           <Button
             type="button"
             icon="pi pi-plus"
             :label="label('Add', 'បន្ថែម')"
-            class="mt-3 w-full"
+            class="add-button mt-3 w-full"
             :loading="previewing"
             :disabled="busy"
             @click="addEntry"
@@ -1092,10 +1138,10 @@ onMounted(loadCategories);
         </section>
       </div>
 
-      <!-- GROUPED INVOICE DRAFT -->
+      <!-- INVOICE DRAFT -->
       <section
         v-if="invoiceGroups.length"
-        class="mt-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-4"
+        class="invoice-draft mt-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-4"
       >
         <div class="mb-3 flex items-center justify-between">
           <h2 class="text-sm font-bold text-slate-800">
@@ -1130,6 +1176,7 @@ onMounted(loadCategories);
                 type="button"
                 class="text-red-500"
                 :disabled="busy"
+                :aria-label="label('Remove category', 'លុបប្រភេទ')"
                 @click="removeMainGroup(main.category)"
               >
                 <i class="pi pi-trash" />
@@ -1137,7 +1184,7 @@ onMounted(loadCategories);
             </div>
           </div>
 
-          <!-- SELECTION SETS -->
+          <!-- SUBGROUPS -->
           <div
             v-for="group in main.subGroups"
             :key="group.groupKey"
@@ -1167,6 +1214,7 @@ onMounted(loadCategories);
               type="button"
               class="rounded-lg p-2 text-red-500 hover:bg-red-50"
               :disabled="busy"
+              :aria-label="label('Remove group', 'លុបក្រុម')"
               @click="removeSubGroup(main.category, group.subCategories)"
             >
               <i class="pi pi-trash" />
@@ -1175,16 +1223,16 @@ onMounted(loadCategories);
         </div>
       </section>
 
-      <!-- FINAL SAVE -->
+      <!-- STICKY SAVE -->
       <section
-        class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3"
+        class="save-section z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3"
       >
-        <div>
+        <div class="min-w-0">
           <p class="text-[10px] text-slate-400">
             {{ label("Invoice Total", "សរុបវិក្កយបត្រ") }}
           </p>
 
-          <strong class="text-2xl font-black text-slate-900">
+          <strong class="invoice-total text-2xl font-black text-slate-900">
             {{ formatAmount(invoiceGrandTotal) }}
           </strong>
         </div>
@@ -1203,6 +1251,26 @@ onMounted(loadCategories);
 </template>
 
 <style scoped>
+/* =========================================
+   MAIN PAGE
+========================================= */
+
+.calculator-page {
+  min-width: 320px;
+}
+
+.page-header {
+  min-height: 50px;
+}
+
+.page-main {
+  padding-bottom: calc(88px + env(safe-area-inset-bottom));
+}
+
+/* =========================================
+   HEADER
+========================================= */
+
 .header-button {
   display: flex;
   width: 36px;
@@ -1212,6 +1280,10 @@ onMounted(loadCategories);
   border-radius: 9px;
   color: #64748b;
 }
+
+/* =========================================
+   CATEGORY
+========================================= */
 
 .input-label {
   display: block;
@@ -1231,7 +1303,16 @@ onMounted(loadCategories);
   font-size: 13px;
 }
 
+.subcategory-viewport {
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
 .sub-category-button {
+  flex-shrink: 0;
   min-height: 34px;
   padding: 5px 10px;
   border: 1px solid #e2e8f0;
@@ -1246,6 +1327,23 @@ onMounted(loadCategories);
   border-color: #22c55e;
   background: #f0fdf4;
   color: #15803d;
+}
+
+.selected-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =========================================
+   DRAFT CHIPS
+========================================= */
+
+.draft-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: thin;
 }
 
 .draft-chip {
@@ -1263,30 +1361,44 @@ onMounted(loadCategories);
   color: white;
 }
 
+/* =========================================
+   TWO COLUMN LAYOUT
+========================================= */
+
 .calculator-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, 1fr);
+
+  gap: clamp(7px, 1.5vw, 12px);
+
+  height: clamp(335px, calc(100dvh - 245px), 620px);
 }
 
 .entry-panel,
 .control-panel {
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
-  background: white;
+  background: #fff;
 }
+
+/* =========================================
+   ENTRY PANEL
+========================================= */
 
 .entry-panel {
   display: flex;
-  min-height: 440px;
   flex-direction: column;
 }
 
 .entry-toolbar {
   display: flex;
-  min-height: 52px;
+  min-height: 48px;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e2e8f0;
@@ -1309,7 +1421,10 @@ onMounted(loadCategories);
 }
 
 .entry-list {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 5px 12px;
 }
 
@@ -1319,14 +1434,17 @@ onMounted(loadCategories);
 
 .entry-content {
   display: grid;
-  min-height: 33px;
-  grid-template-columns: minmax(0, 1fr) auto auto 25px;
+  min-height: 35px;
+  grid-template-columns:
+    minmax(0, 1fr)
+    auto auto 25px;
   align-items: center;
   gap: 5px;
   padding: 3px 0;
 }
 
 .entry-expression {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1336,20 +1454,22 @@ onMounted(loadCategories);
 }
 
 .entry-colon {
-  color: #64748b;
   font-size: 11px;
+  color: #64748b;
 }
 
 .entry-amount {
   font-size: 12px;
   font-weight: 800;
   color: #0f172a;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .entry-delete-button {
   display: flex;
   width: 24px;
-  height: 24px;
+  height: 27px;
   align-items: center;
   justify-content: center;
   border-radius: 6px;
@@ -1358,6 +1478,7 @@ onMounted(loadCategories);
 }
 
 .entry-footer {
+  flex: 0 0 auto;
   border-top: 1px solid #e2e8f0;
   padding: 10px 12px;
 }
@@ -1368,27 +1489,43 @@ onMounted(loadCategories);
   color: #1e293b;
 }
 
+/* =========================================
+   CONTROL PANEL
+========================================= */
+
 .control-panel {
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(6px, 1.25vw, 12px);
 }
 
 .number-display {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 12px;
+  padding-bottom: 9px;
+  scrollbar-width: thin;
 }
 
 .display-field {
   display: block;
   width: 100%;
-  min-height: 46px;
-  padding: 7px 12px;
+
+  min-height: clamp(34px, 4.9dvh, 46px);
+
+  padding: 5px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 9px;
   background: #f8fafc;
   text-align: right;
-  font-size: 22px;
+
+  font-size: clamp(18px, 2vw, 23px);
+
   font-weight: 800;
   color: #0f172a;
+  font-variant-numeric: tabular-nums;
 }
 
 .display-field.selected {
@@ -1396,13 +1533,20 @@ onMounted(loadCategories);
   background: #f0fdf4;
 }
 
+/* =========================================
+   OPERATORS
+========================================= */
+
 .operator-button {
-  min-height: 38px;
+  min-height: clamp(31px, 4.3dvh, 38px);
+
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: white;
   color: #334155;
-  font-size: 17px;
+
+  font-size: clamp(16px, 2.1vw, 19px);
+
   font-weight: 800;
 }
 
@@ -1412,25 +1556,79 @@ onMounted(loadCategories);
   color: #15803d;
 }
 
+.expression-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* =========================================
+   KEYPAD
+========================================= */
+
 .keypad {
   display: grid;
+
+  flex: 1 0 112px;
+  min-height: 112px;
+
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 12px;
+
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+
+  gap: clamp(4px, 0.75vw, 8px);
+
+  margin-top: clamp(5px, 0.85dvh, 12px);
 }
 
 .keypad-button {
-  min-height: 45px;
+  min-width: 0;
+  min-height: 0;
+
   border: 1px solid #e2e8f0;
   border-radius: 9px;
   background: #f8fafc;
   color: #334155;
-  font-size: 18px;
+
+  font-size: clamp(17px, 2.2vw, 23px);
+
   font-weight: 800;
+  touch-action: manipulation;
 }
 
 .keypad-button:active {
   background: #dcfce7;
+}
+
+/* =========================================
+   ADD BUTTON
+========================================= */
+
+.add-button {
+  flex: 0 0 auto;
+  min-height: 36px;
+
+  margin-top: clamp(5px, 0.8dvh, 12px) !important;
+}
+
+/* =========================================
+   STICKY SAVE
+========================================= */
+
+.save-section {
+  position: fixed;
+
+  bottom: max(8px, env(safe-area-inset-bottom));
+
+  left: 50%;
+  transform: translateX(-50%);
+
+  width: min(calc(100% - 24px), 1152px);
+
+  z-index: 40;
+
+  box-shadow: 0 -5px 25px rgba(15, 23, 42, 0.09);
 }
 
 button:disabled {
@@ -1438,45 +1636,239 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* =========================================
+   MOBILE
+========================================= */
+
 @media (max-width: 540px) {
-  .calculator-layout {
-    gap: 7px;
+  .page-main {
+    padding-top: 8px;
   }
 
-  .entry-panel {
-    min-height: 400px;
+  .category-section {
+    padding: 9px;
+    margin-bottom: 7px;
   }
 
-  .control-panel {
-    padding: 8px;
+  .category-section > div {
+    gap: 8px;
+  }
+
+  .input-label {
+    margin-bottom: 3px;
+    font-size: 10px;
+  }
+
+  .category-select {
+    min-height: 35px;
+    font-size: 12px;
+    padding: 0 9px;
+  }
+
+  .sub-category-button {
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .selected-line {
+    margin-top: 2px;
+    font-size: 10px;
+  }
+
+  .draft-strip {
+    margin-bottom: 7px;
+    padding: 5px 7px;
+  }
+
+  .draft-strip > span {
+    font-size: 10px;
+  }
+
+  .draft-chip {
+    padding: 4px 7px;
+    font-size: 10px;
+  }
+
+  .entry-toolbar {
+    min-height: 41px;
+    padding: 0 6px;
+  }
+
+  .toolbar-button {
+    width: 27px;
+    height: 29px;
   }
 
   .entry-list {
-    padding: 4px 7px;
+    padding: 3px 6px;
+  }
+
+  .entry-content {
+    min-height: 31px;
+
+    grid-template-columns:
+      minmax(0, 1fr)
+      auto auto 22px;
+
+    gap: 3px;
   }
 
   .entry-expression,
   .entry-amount {
-    font-size: 10px;
+    font-size: clamp(10px, 2.65vw, 12px);
   }
 
-  .entry-content {
-    grid-template-columns: minmax(0, 1fr) auto auto 22px;
-    gap: 3px;
+  .entry-footer {
+    padding: 7px 8px;
+  }
+
+  .entry-footer strong {
+    font-size: 15px;
+  }
+
+  .number-heading {
+    margin-bottom: 5px !important;
+  }
+
+  .operator-row {
+    margin-top: 6px !important;
+    gap: 4px;
+  }
+
+  .extra-field {
+    margin-top: 6px !important;
+  }
+
+  .number-display .input-label {
+    margin-bottom: 1px;
+  }
+
+  .number-display {
+    padding-bottom: 5px;
   }
 
   .display-field {
-    min-height: 40px;
-    font-size: 17px;
+    min-height: clamp(30px, 4.7dvh, 39px);
+
+    padding: 3px 7px;
+
+    font-size: clamp(16px, 4vw, 20px);
   }
 
   .operator-button {
-    min-height: 36px;
+    min-height: clamp(28px, 4dvh, 34px);
+  }
+
+  .expression-preview {
+    margin-top: 5px !important;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
+  .keypad {
+    min-height: 114px;
+  }
+
+  .add-button {
+    min-height: 33px;
+    font-size: 12px;
+  }
+
+  .save-section {
+    padding: 9px 10px;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .save-section .invoice-total {
+    font-size: clamp(17px, 5vw, 23px);
+  }
+
+  .save-section :deep(.p-button) {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+}
+
+/* =========================================
+   SHORT SCREEN HEIGHTS
+========================================= */
+
+@media (max-height: 690px) {
+  .calculator-layout {
+    height: max(300px, calc(100dvh - 243px));
+  }
+
+  .number-display .input-label {
+    font-size: 10px;
+  }
+
+  .number-heading {
+    margin-bottom: 4px !important;
+  }
+
+  .operator-row,
+  .extra-field {
+    margin-top: 4px !important;
+  }
+
+  .expression-preview {
+    margin-top: 4px !important;
+  }
+
+  .keypad {
+    min-height: 106px;
+  }
+}
+
+@media (max-height: 550px) {
+  .calculator-layout {
+    height: 300px;
+  }
+
+  .page-main {
+    padding-top: 5px;
+  }
+
+  .category-section {
+    padding: 6px 9px;
+  }
+
+  .number-display {
+    padding-bottom: 3px;
+  }
+
+  .control-panel {
+    padding: 5px;
+  }
+}
+
+/* =========================================
+   TABLET / DESKTOP
+========================================= */
+
+@media (min-width: 768px) {
+  .calculator-layout {
+    height: clamp(415px, calc(100dvh - 245px), 650px);
+
+    gap: 14px;
+  }
+
+  .control-panel {
+    padding: 14px;
+  }
+
+  .keypad {
+    min-height: 148px;
   }
 
   .keypad-button {
-    min-height: 41px;
-    font-size: 16px;
+    font-size: 24px;
+  }
+
+  .entry-content {
+    min-height: 38px;
   }
 }
 </style>
